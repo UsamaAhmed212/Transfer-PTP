@@ -54,15 +54,17 @@ class FileServer(private val context: Context) {
                                     
                                     /* Preview Modal */
                                     #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
-                                    #preview-content { max-width: 90%; max-height: 80%; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+                                    #preview-content { width: 90%; height: 80%; display: flex; flex-direction: column; align-items: center; gap: 20px; overflow: hidden; }
                                     .close-btn { position: absolute; top: 20px; right: 30px; color: white; font-size: 40px; cursor: pointer; }
                                     audio, video { width: 100%; max-width: 600px; outline: none; }
                                     .music-art { width: 300px; height: 300px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); object-fit: cover; }
+                                    .text-preview { background: #1e1e1e; color: #d4d4d4; padding: 20px; width: 100%; height: 100%; overflow: auto; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 14px; text-align: left; }
+                                    iframe { border: none; width: 100%; height: 100%; border-radius: 8px; background: white; }
                                 """.trimIndent()
                             }
                             script {
                                 +"""
-                                    function showPreview(url, type, name, thumbUrl) {
+                                    async function showPreview(url, type, name, thumbUrl) {
                                         const overlay = document.getElementById('preview-overlay');
                                         const content = document.getElementById('preview-content');
                                         overlay.style.display = 'flex';
@@ -94,6 +96,21 @@ class FileServer(private val context: Context) {
                                             video.autoplay = true;
                                             video.preload = 'metadata';
                                             content.appendChild(video);
+                                        } else if (type === 'text') {
+                                            try {
+                                                const response = await fetch(url);
+                                                const text = await response.text();
+                                                const pre = document.createElement('pre');
+                                                pre.className = 'text-preview';
+                                                pre.innerText = text;
+                                                content.appendChild(pre);
+                                            } catch (e) {
+                                                content.innerHTML = '<p style="color:white">Error loading text file</p>';
+                                            }
+                                        } else if (type === 'pdf') {
+                                            const iframe = document.createElement('iframe');
+                                            iframe.src = url;
+                                            content.appendChild(iframe);
                                         }
                                         document.getElementById('preview-title').innerText = name;
                                     }
@@ -127,7 +144,17 @@ class FileServer(private val context: Context) {
                                             val isImg = ext in listOf("jpg", "jpeg", "png", "gif", "webp")
                                             val isVid = ext in listOf("mp4", "mkv", "mov", "avi")
                                             val isAud = ext in listOf("mp3", "wav", "m4a", "flac")
-                                            val previewType = if (isImg) "image" else if (isVid) "video" else if (isAud) "audio" else null
+                                            val isTxt = ext in listOf("txt", "log", "json", "xml", "kt", "java", "html", "css", "js")
+                                            val isPdf = ext == "pdf"
+                                            
+                                            val previewType = when {
+                                                isImg -> "image"
+                                                isVid -> "video"
+                                                isAud -> "audio"
+                                                isTxt -> "text"
+                                                isPdf -> "pdf"
+                                                else -> null
+                                            }
 
                                             li {
                                                 div(classes = "thumb-container") {
@@ -137,7 +164,12 @@ class FileServer(private val context: Context) {
                                                         }
                                                     } else {
                                                         span(classes = "icon") {
-                                                            +if (file.isDirectory) "📁" else "📄"
+                                                            +when {
+                                                                file.isDirectory -> "📁"
+                                                                isTxt -> "📄"
+                                                                isPdf -> "📕"
+                                                                else -> "📄"
+                                                            }
                                                         }
                                                     }
                                                 }
