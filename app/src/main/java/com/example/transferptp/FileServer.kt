@@ -1,11 +1,11 @@
 package com.example.transferptp
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.os.Environment
-import io.ktor.http.ContentDisposition
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
+import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.html.*
@@ -13,6 +13,7 @@ import io.ktor.server.netty.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.html.*
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -33,67 +34,59 @@ class FileServer(private val context: Context) {
                             title { +"Transfer PTP" }
                             style {
                                 +"""
-                                    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background-color: #f8f9fa; color: #333; }
-                                    .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-                                    h1 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-                                    .path { font-family: monospace; background: #e9ecef; padding: 8px; border-radius: 4px; word-break: break-all; margin-bottom: 20px; display: block; }
+                                    body { font-family: 'Segoe UI', sans-serif; padding: 20px; background-color: #f8f9fa; }
+                                    .container { max-width: 900px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+                                    .path { font-family: monospace; background: #eee; padding: 8px; border-radius: 4px; display: block; margin: 15px 0; word-break: break-all; }
                                     ul { list-style: none; padding: 0; }
-                                    li { display: flex; align-items: center; padding: 12px; border-bottom: 1px solid #eee; transition: background 0.2s; }
-                                    li:hover { background: #f1f3f5; }
-                                    li:last-child { border-bottom: none; }
-                                    .icon { font-size: 1.2rem; margin-right: 15px; width: 25px; text-align: center; }
-                                    .file-info { flex-grow: 1; }
-                                    .file-name { font-weight: 500; text-decoration: none; color: #007bff; }
-                                    .file-name:hover { text-decoration: underline; }
-                                    .file-meta { font-size: 0.85rem; color: #6c757d; margin-top: 4px; }
-                                    .btn-back { display: inline-block; margin-bottom: 20px; text-decoration: none; color: #495057; font-weight: bold; }
-                                    .btn-back:before { content: '← '; }
+                                    li { display: flex; align-items: center; padding: 12px; border-bottom: 1px solid #eee; }
+                                    .thumb-container { width: 60px; height: 60px; margin-right: 15px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 8px; overflow: hidden; flex-shrink: 0; }
+                                    .thumb-container img { width: 100%; height: 100%; object-fit: cover; }
+                                    .icon { font-size: 1.5rem; }
+                                    .file-info { flex-grow: 1; min-width: 0; }
+                                    .file-name { font-weight: 500; color: #007bff; text-decoration: none; word-break: break-all; }
+                                    .file-meta { font-size: 0.8rem; color: #6c757d; margin-top: 4px; }
+                                    .btn-back { display: inline-block; margin-bottom: 15px; text-decoration: none; color: #333; font-weight: bold; }
                                 """.trimIndent()
                             }
                         }
                         body {
                             div(classes = "container") {
                                 h1 { +"File Transfer" }
-                                
                                 span(classes = "path") { +"Path: ${currentDir.absolutePath}" }
-                                
+
                                 val relativeCurrent = currentDir.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
                                 if (relativeCurrent.isNotEmpty()) {
                                     val parentPath = currentDir.parentFile?.absolutePath?.removePrefix(root.absolutePath) ?: ""
-                                    a(href = "/?path=$parentPath", classes = "btn-back") { +"Back to parent" }
+                                    a(href = "/?path=$parentPath", classes = "btn-back") { +"← Back to parent" }
                                 }
 
                                 ul {
                                     val files = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                                    
                                     if (files == null) {
-                                        li {
-                                            style = "color: #d9534f; background: #fdf7f7; border: 1px solid #ebccd1; padding: 15px;"
-                                            +"⚠️ Permission Denied: Please enable 'All Files Access' in Android Settings for this app."
-                                        }
-                                    } else if (files.isEmpty()) {
-                                        li { +"This folder is empty." }
+                                        li { +"⚠️ Permission Denied: Please check storage settings." }
                                     } else {
                                         files.forEach { file ->
-                                            val relativePath = file.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
+                                            val rel = file.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
+                                            val ext = file.extension.lowercase()
+                                            val isImg = ext in listOf("jpg", "jpeg", "png", "gif", "webp")
+                                            val isVid = ext in listOf("mp4", "mkv", "mov", "avi")
+
                                             li {
-                                                span(classes = "icon") {
-                                                    +if (file.isDirectory) "📁" else when (file.extension.lowercase()) {
-                                                        "jpg", "jpeg", "png", "gif", "webp" -> "🖼️"
-                                                        "mp3", "wav", "ogg", "m4a", "flac" -> "🎵"
-                                                        "mp4", "mkv", "mov", "avi" -> "🎬"
-                                                        "pdf" -> "📕"
-                                                        "zip", "rar", "7z" -> "📦"
-                                                        "txt", "doc", "docx" -> "📄"
-                                                        else -> "📄"
+                                                div(classes = "thumb-container") {
+                                                    if (isImg || isVid) {
+                                                        img(src = "/thumbnail?path=$rel")
+                                                    } else {
+                                                        span(classes = "icon") {
+                                                            +if (file.isDirectory) "📁" else "📄"
+                                                        }
                                                     }
                                                 }
                                                 div(classes = "file-info") {
                                                     if (file.isDirectory) {
-                                                        a(href = "/?path=$relativePath", classes = "file-name") { +file.name }
+                                                        a(href = "/?path=$rel", classes = "file-name") { +file.name }
                                                         div(classes = "file-meta") { +"Folder" }
                                                     } else {
-                                                        a(href = "/download?path=$relativePath", classes = "file-name") { +file.name }
+                                                        a(href = "/download?path=$rel", classes = "file-name") { +file.name }
                                                         div(classes = "file-meta") {
                                                             +"${file.length() / 1024} KB • ${file.extension.uppercase()}"
                                                         }
@@ -105,6 +98,43 @@ class FileServer(private val context: Context) {
                                 }
                             }
                         }
+                    }
+                }
+
+                get("/thumbnail") {
+                    val root = Environment.getExternalStorageDirectory()
+                    val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
+                    val file = File(root, path.removePrefix("/"))
+                    
+                    if (!file.exists()) return@get call.respond(HttpStatusCode.NotFound)
+
+                    val ext = file.extension.lowercase()
+                    val bitmap: Bitmap? = if (ext in listOf("jpg", "jpeg", "png", "gif", "webp")) {
+                        val options = BitmapFactory.Options().apply {
+                            inJustDecodeBounds = true
+                        }
+                        BitmapFactory.decodeFile(file.absolutePath, options)
+                        options.inSampleSize = calculateInSampleSize(options, 120, 120)
+                        options.inJustDecodeBounds = false
+                        BitmapFactory.decodeFile(file.absolutePath, options)
+                    } else if (ext in listOf("mp4", "mkv", "mov", "avi")) {
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(file.absolutePath)
+                            retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        } catch (e: Exception) {
+                            null
+                        } finally {
+                            retriever.release()
+                        }
+                    } else null
+
+                    if (bitmap != null) {
+                        val stream = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                        call.respondBytes(stream.toByteArray(), ContentType.Image.JPEG)
+                    } else {
+                        call.respond(HttpStatusCode.NotFound)
                     }
                 }
 
@@ -122,19 +152,28 @@ class FileServer(private val context: Context) {
                         )
                         call.respondFile(file)
                     } else {
-                        call.respondText("File not found at: ${file.absolutePath}", status = HttpStatusCode.NotFound)
+                        call.respondText("File not found", status = HttpStatusCode.NotFound)
                     }
                 }
             }
         }.start(wait = false)
-
-        val ip = getLocalIpAddress()
-        onStarted("http://$ip:$port")
+        onStarted("http://${getLocalIpAddress()}:$port")
     }
 
-    fun stop() {
-        server?.stop(1000, 2000)
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val (height: Int, width: Int) = options.outHeight to options.outWidth
+        var inSampleSize = 1
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight: Int = height / 2
+            val halfWidth: Int = width / 2
+            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize
     }
+
+    fun stop() { server?.stop(1000, 2000) }
 
     private fun getLocalIpAddress(): String {
         try {
@@ -150,9 +189,7 @@ class FileServer(private val context: Context) {
                     }
                 }
             }
-        } catch (ex: Exception) {
-            ex.printStackTrace()
-        }
+        } catch (ex: Exception) { ex.printStackTrace() }
         return "127.0.0.1"
     }
 }
