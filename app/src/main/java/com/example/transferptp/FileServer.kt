@@ -10,6 +10,7 @@ import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.html.*
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.partialcontent.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.html.*
@@ -23,6 +24,7 @@ class FileServer(private val context: Context) {
 
     fun start(port: Int = 8080, onStarted: (String) -> Unit) {
         server = embeddedServer(Netty, port = port) {
+            install(PartialContent)
             routing {
                 get("/") {
                     val root = Environment.getExternalStorageDirectory()
@@ -43,9 +45,63 @@ class FileServer(private val context: Context) {
                                     .thumb-container img { width: 100%; height: 100%; object-fit: cover; }
                                     .icon { font-size: 1.5rem; }
                                     .file-info { flex-grow: 1; min-width: 0; }
-                                    .file-name { font-weight: 500; color: #007bff; text-decoration: none; word-break: break-all; }
+                                    .file-name { font-weight: 500; color: #007bff; text-decoration: none; word-break: break-all; cursor: pointer; }
                                     .file-meta { font-size: 0.8rem; color: #6c757d; margin-top: 4px; }
-                                    .btn-back { display: inline-block; margin-bottom: 15px; text-decoration: none; color: #333; font-weight: bold; }
+                                    .actions { display: flex; gap: 8px; }
+                                    .btn { padding: 5px 10px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; cursor: pointer; border: none; }
+                                    .btn-preview { background: #007bff; color: white; }
+                                    .btn-download { background: #28a745; color: white; }
+                                    
+                                    /* Preview Modal */
+                                    #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
+                                    #preview-content { max-width: 90%; max-height: 80%; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+                                    .close-btn { position: absolute; top: 20px; right: 30px; color: white; font-size: 40px; cursor: pointer; }
+                                    audio, video { width: 100%; max-width: 600px; outline: none; }
+                                    .music-art { width: 300px; height: 300px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); object-fit: cover; }
+                                """.trimIndent()
+                            }
+                            script {
+                                +"""
+                                    function showPreview(url, type, name, thumbUrl) {
+                                        const overlay = document.getElementById('preview-overlay');
+                                        const content = document.getElementById('preview-content');
+                                        overlay.style.display = 'flex';
+                                        content.innerHTML = '';
+                                        
+                                        if (type === 'image') {
+                                            const img = document.createElement('img');
+                                            img.src = url;
+                                            img.style.maxWidth = '100%';
+                                            img.style.maxHeight = '100%';
+                                            content.appendChild(img);
+                                        } else if (type === 'audio') {
+                                            const art = document.createElement('img');
+                                            art.src = thumbUrl;
+                                            art.className = 'music-art';
+                                            art.onerror = function() { this.src = 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png'; };
+                                            content.appendChild(art);
+                                            
+                                            const audio = document.createElement('audio');
+                                            audio.src = url;
+                                            audio.controls = true;
+                                            audio.autoplay = true;
+                                            audio.preload = 'metadata';
+                                            content.appendChild(audio);
+                                        } else if (type === 'video') {
+                                            const video = document.createElement('video');
+                                            video.src = url;
+                                            video.controls = true;
+                                            video.autoplay = true;
+                                            video.preload = 'metadata';
+                                            content.appendChild(video);
+                                        }
+                                        document.getElementById('preview-title').innerText = name;
+                                    }
+                                    function closePreview() {
+                                        const overlay = document.getElementById('preview-overlay');
+                                        document.getElementById('preview-content').innerHTML = '';
+                                        overlay.style.display = 'none';
+                                    }
                                 """.trimIndent()
                             }
                         }
@@ -57,24 +113,28 @@ class FileServer(private val context: Context) {
                                 val relativeCurrent = currentDir.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
                                 if (relativeCurrent.isNotEmpty()) {
                                     val parentPath = currentDir.parentFile?.absolutePath?.removePrefix(root.absolutePath) ?: ""
-                                    a(href = "/?path=$parentPath", classes = "btn-back") { +"← Back to parent" }
+                                    a(href = "/?path=$parentPath") { +"← Back" }
                                 }
 
                                 ul {
                                     val files = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
                                     if (files == null) {
-                                        li { +"⚠️ Permission Denied: Please check storage settings." }
+                                        li { +"⚠️ Permission Denied" }
                                     } else {
                                         files.forEach { file ->
                                             val rel = file.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
                                             val ext = file.extension.lowercase()
                                             val isImg = ext in listOf("jpg", "jpeg", "png", "gif", "webp")
                                             val isVid = ext in listOf("mp4", "mkv", "mov", "avi")
+                                            val isAud = ext in listOf("mp3", "wav", "m4a", "flac")
+                                            val previewType = if (isImg) "image" else if (isVid) "video" else if (isAud) "audio" else null
 
                                             li {
                                                 div(classes = "thumb-container") {
-                                                    if (isImg || isVid) {
-                                                        img(src = "/thumbnail?path=$rel")
+                                                    if (isImg || isVid || isAud) {
+                                                        img(src = "/thumbnail?path=$rel") {
+                                                            onError = "this.src='https://cdn-icons-png.flaticon.com/512/3844/3844724.png'"
+                                                        }
                                                     } else {
                                                         span(classes = "icon") {
                                                             +if (file.isDirectory) "📁" else "📄"
@@ -86,16 +146,38 @@ class FileServer(private val context: Context) {
                                                         a(href = "/?path=$rel", classes = "file-name") { +file.name }
                                                         div(classes = "file-meta") { +"Folder" }
                                                     } else {
-                                                        a(href = "/download?path=$rel", classes = "file-name") { +file.name }
+                                                        span(classes = "file-name") {
+                                                            if (previewType != null) {
+                                                                onClick = "showPreview('/stream?path=$rel', '$previewType', '${file.name}', '/thumbnail?path=$rel')"
+                                                            }
+                                                            +file.name
+                                                        }
                                                         div(classes = "file-meta") {
                                                             +"${file.length() / 1024} KB • ${file.extension.uppercase()}"
                                                         }
+                                                    }
+                                                }
+                                                if (!file.isDirectory) {
+                                                    div(classes = "actions") {
+                                                        if (previewType != null) {
+                                                            button(classes = "btn btn-preview") {
+                                                                onClick = "showPreview('/stream?path=$rel', '$previewType', '${file.name}', '/thumbnail?path=$rel')"
+                                                                +"Preview"
+                                                            }
+                                                        }
+                                                        a(href = "/download?path=$rel", classes = "btn btn-download") { +"Download" }
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
+                            }
+                            div {
+                                id = "preview-overlay"
+                                span(classes = "close-btn") { onClick = "closePreview()"; +"×" }
+                                h3 { id = "preview-title"; style = "color: white; margin-bottom: 20px;" }
+                                div { id = "preview-content" }
                             }
                         }
                     }
@@ -110,11 +192,9 @@ class FileServer(private val context: Context) {
 
                     val ext = file.extension.lowercase()
                     val bitmap: Bitmap? = if (ext in listOf("jpg", "jpeg", "png", "gif", "webp")) {
-                        val options = BitmapFactory.Options().apply {
-                            inJustDecodeBounds = true
-                        }
+                        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         BitmapFactory.decodeFile(file.absolutePath, options)
-                        options.inSampleSize = calculateInSampleSize(options, 120, 120)
+                        options.inSampleSize = calculateInSampleSize(options, 200, 200)
                         options.inJustDecodeBounds = false
                         BitmapFactory.decodeFile(file.absolutePath, options)
                     } else if (ext in listOf("mp4", "mkv", "mov", "avi")) {
@@ -122,19 +202,33 @@ class FileServer(private val context: Context) {
                         try {
                             retriever.setDataSource(file.absolutePath)
                             retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                        } catch (e: Exception) {
-                            null
-                        } finally {
-                            retriever.release()
-                        }
+                        } catch (e: Exception) { null } finally { retriever.release() }
+                    } else if (ext in listOf("mp3", "wav", "m4a", "flac")) {
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(file.absolutePath)
+                            val art = retriever.embeddedPicture
+                            if (art != null) BitmapFactory.decodeByteArray(art, 0, art.size) else null
+                        } catch (e: Exception) { null } finally { retriever.release() }
                     } else null
 
                     if (bitmap != null) {
                         val stream = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                         call.respondBytes(stream.toByteArray(), ContentType.Image.JPEG)
                     } else {
                         call.respond(HttpStatusCode.NotFound)
+                    }
+                }
+
+                get("/stream") {
+                    val root = Environment.getExternalStorageDirectory()
+                    val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
+                    val file = File(root, path.removePrefix("/"))
+                    if (file.exists() && !file.isDirectory) {
+                        call.respondFile(file)
+                    } else {
+                        call.respondText("File not found", status = HttpStatusCode.NotFound)
                     }
                 }
 
