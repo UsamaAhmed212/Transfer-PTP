@@ -38,7 +38,11 @@ class FileServer(private val context: Context) {
                                 +"""
                                     body { font-family: 'Segoe UI', sans-serif; padding: 20px; background-color: #f8f9fa; }
                                     .container { max-width: 900px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-                                    .path { font-family: monospace; background: #eee; padding: 8px; border-radius: 4px; display: block; margin: 15px 0; word-break: break-all; }
+                                    .breadcrumb { display: flex; align-items: center; background: #f0f2f5; padding: 10px 15px; border-radius: 8px; margin: 15px 0; font-size: 0.95rem; overflow-x: auto; white-space: nowrap; border: 1px solid #ddd; }
+                                    .breadcrumb a { text-decoration: none; color: #007bff; font-weight: 500; padding: 2px 6px; border-radius: 4px; }
+                                    .breadcrumb a:hover { background: #e7f1ff; text-decoration: underline; }
+                                    .breadcrumb .separator { color: #888; margin: 0 8px; font-weight: bold; }
+                                    .breadcrumb .current { color: #333; font-weight: bold; padding: 2px 6px; }
                                     ul { list-style: none; padding: 0; }
                                     li { display: flex; align-items: center; padding: 12px; border-bottom: 1px solid #eee; }
                                     .thumb-container { width: 60px; height: 60px; margin-right: 15px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 8px; overflow: hidden; flex-shrink: 0; }
@@ -125,12 +129,33 @@ class FileServer(private val context: Context) {
                         body {
                             div(classes = "container") {
                                 h1 { +"File Transfer" }
-                                span(classes = "path") { +"Path: ${currentDir.absolutePath}" }
+                                
+                                div(classes = "breadcrumb") {
+                                    a(href = "/") { +"🏠 Internal Storage" }
+                                    
+                                    val relativePath = currentDir.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
+                                    if (relativePath.isNotEmpty()) {
+                                        val parts = relativePath.split("/")
+                                        var cumulativePath = ""
+                                        parts.forEachIndexed { index, part ->
+                                            span(classes = "separator") { +"❯" }
+                                            cumulativePath += if (cumulativePath.isEmpty()) part else "/$part"
+                                            if (index == parts.size - 1) {
+                                                span(classes = "current") { +part }
+                                            } else {
+                                                a(href = "/?path=$cumulativePath") { +part }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 val relativeCurrent = currentDir.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
                                 if (relativeCurrent.isNotEmpty()) {
                                     val parentPath = currentDir.parentFile?.absolutePath?.removePrefix(root.absolutePath) ?: ""
-                                    a(href = "/?path=$parentPath") { +"← Back" }
+                                    a(href = "/?path=$parentPath", classes = "btn-back") { 
+                                        style = "display: inline-block; margin-bottom: 15px; text-decoration: none; color: #555; font-weight: bold;"
+                                        +"← Back" 
+                                    }
                                 }
 
                                 ul {
