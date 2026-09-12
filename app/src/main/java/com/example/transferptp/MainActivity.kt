@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d("MainActivity", "onCreate")
         fileServer = FileServer(this)
         enableEdgeToEdge()
         setContent {
@@ -46,8 +48,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        Log.d("MainActivity", "onDestroy")
         super.onDestroy()
-        fileServer?.stop()
+        // fileServer?.stop() // Temporarily disable automatic stop on destroy
     }
 }
 
@@ -121,6 +124,7 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
             )
             Spacer(modifier = Modifier.height(16.dp))
             Button(onClick = {
+                Log.d("MainActivity", "Stop Server clicked")
                 fileServer.stop()
                 isRunning = false
                 serverUrl = null
@@ -130,8 +134,10 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
         } else {
             Button(
                 onClick = {
+                    Log.d("MainActivity", "Start Server clicked")
                     if (checkStoragePermission()) {
                         fileServer.start { url ->
+                            Log.d("MainActivity", "Server started callback with URL: $url")
                             serverUrl = url
                             isRunning = true
                         }
