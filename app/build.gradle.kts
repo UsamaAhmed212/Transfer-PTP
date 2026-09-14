@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.ktor.server.cio)
     implementation(libs.ktor.server.html.builder)
     implementation(libs.ktor.server.partial.content)
+    implementation(libs.ktor.server.sessions)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

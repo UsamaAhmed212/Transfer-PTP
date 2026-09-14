@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
 fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var serverUrl by remember { mutableStateOf<String?>(null) }
+    var serverPin by remember { mutableStateOf<String?>(null) }
     var isRunning by remember { mutableStateOf(false) }
     var hasPermission by remember { mutableStateOf(false) }
 
@@ -122,12 +123,21 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
                 fontWeight = FontWeight.Bold,
                 fontSize = 20.sp
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "PIN:", fontSize = 18.sp)
+            Text(
+                text = serverPin ?: "",
+                color = MaterialTheme.colorScheme.secondary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 24.sp
+            )
             Spacer(modifier = Modifier.height(16.dp))
             Button(onClick = {
                 Log.d("MainActivity", "Stop Server clicked")
                 fileServer.stop()
                 isRunning = false
                 serverUrl = null
+                serverPin = null
             }) {
                 Text("Stop Server")
             }
@@ -136,10 +146,17 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
                 onClick = {
                     Log.d("MainActivity", "Start Server clicked")
                     if (checkStoragePermission()) {
-                        fileServer.start { url ->
-                            Log.d("MainActivity", "Server started callback with URL: $url")
-                            serverUrl = url
-                            isRunning = true
+                        Toast.makeText(context, "Starting server...", Toast.LENGTH_SHORT).show()
+                        try {
+                            fileServer.start { url, pin ->
+                                Log.d("MainActivity", "Server started callback with URL: $url, PIN: $pin")
+                                serverUrl = url
+                                serverPin = pin
+                                isRunning = true
+                            }
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to start server", e)
+                            Toast.makeText(context, "Server Start Error: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                         }
                     } else {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
