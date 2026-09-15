@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -16,57 +18,119 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
+import io.ktor.util.*
 import kotlinx.html.*
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URLEncoder
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+
+@Serializable
+data class UserSession(val token: String)
 
 class FileServer(private val context: Context) {
     
     private var currentPin: String = ""
-
+    
     companion object {
         private var server: EmbeddedServer<*, *>? = null
-        
-        fun stopServer() {
-            Log.d("FileServer", "Stopping global server instance")
+        private val activeSessions = ConcurrentHashMap<String, String>() 
+        private var onDevicesUpdated: ((List<String>) -> Unit)? = null
+        private var lastUrl: String? = null
+        private var lastPin: String? = null
+        private var serverSecret: String = ""
+
+        fun isServerRunning(): Boolean = server != null
+        fun getSavedUrl(): String? = lastUrl
+        fun getSavedPin(): String? = lastPin
+
+        private fun initStorage(context: Context) {
+            val prefs = context.getSharedPreferences("server_prefs", Context.MODE_PRIVATE)
+            serverSecret = prefs.getString("secret", "") ?: ""
+            if (serverSecret.isEmpty()) {
+                serverSecret = generateNonce()
+                prefs.edit().putString("secret", serverSecret).apply()
+            }
+            val savedSessions = prefs.getString("active_sessions", "{}") ?: "{}"
             try {
-                server?.stop(100, 500)
-            } catch (e: Exception) {
-                Log.e("FileServer", "Error stopping server", e)
-            } finally {
-                server = null
+                val map = Json.decodeFromString<Map<String, String>>(savedSessions)
+                activeSessions.clear()
+                activeSessions.putAll(map)
+            } catch (e: Exception) { }
+        }
+
+        private fun saveSessions(context: Context) {
+            val prefs = context.getSharedPreferences("server_prefs", Context.MODE_PRIVATE)
+            val json = Json.encodeToString(activeSessions.toMap())
+            prefs.edit().putString("active_sessions", json).apply()
+        }
+
+        fun stopServer() {
+            try { server?.stop(200, 500) } catch (e: Exception) { } finally { server = null }
+        }
+        
+        fun disconnectDevice(context: Context, displayInfo: String) {
+            val tokensToRemove = activeSessions.filterValues { it == displayInfo }.keys
+            tokensToRemove.forEach { activeSessions.remove(it) }
+            saveSessions(context)
+            notifyDevices()
+        }
+
+        fun notifyDevices() {
+            val deviceList = activeSessions.values.distinct().toList()
+            Handler(Looper.getMainLooper()).post {
+                onDevicesUpdated?.invoke(deviceList)
             }
         }
     }
 
-    fun start(port: Int = 8080, onStarted: (String, String) -> Unit) {
-        Log.d("FileServer", "Start method called")
+    fun disconnectDevice(displayInfo: String) {
+        disconnectDevice(context, displayInfo)
+    }
+
+    fun stop() {
+        stopServer()
+    }
+
+    fun start(
+        port: Int = 8080, 
+        onStarted: (String, String) -> Unit,
+        onDevicesUpdated: (List<String>) -> Unit
+    ) {
+        initStorage(context)
+        Companion.onDevicesUpdated = onDevicesUpdated
+        
         if (server != null) {
-            Log.d("FileServer", "Server already running, stopping it first")
-            stopServer()
+            onStarted(lastUrl ?: "", lastPin ?: "")
+            notifyDevices()
+            return
         }
 
         currentPin = (1000..9999).random().toString()
+        lastPin = currentPin
 
         try {
-            Log.d("FileServer", "Configuring server on port $port with PIN $currentPin")
             val newServer = embeddedServer(CIO, port = port) {
                 install(Sessions) {
-                    cookie<String>("SESSION_ID") {
+                    cookie<UserSession>("USER_SESSION") {
                         cookie.path = "/"
-                        cookie.maxAgeInSeconds = 3600
+                        transform(SessionTransportTransformerMessageAuthentication(serverSecret.toByteArray()))
+                        cookie.maxAgeInSeconds = 31536000 
                     }
                 }
                 install(PartialContent)
                 
                 routing {
                     get("/") {
-                        val session = call.sessions.get<String>()
-                        if (session == "VERIFIED") {
-                            // Show File Browser
+                        val session = call.sessions.get<UserSession>()
+                        if (session != null && activeSessions.containsKey(session.token)) {
+                            notifyDevices()
                             val root = Environment.getExternalStorageDirectory()
                             val path = call.parameters["path"] ?: ""
                             val currentDir = if (path.isEmpty()) File(root.absolutePath) else File(root, path)
@@ -111,56 +175,21 @@ class FileServer(private val context: Context) {
                                                 const content = document.getElementById('preview-content');
                                                 overlay.style.display = 'flex';
                                                 content.innerHTML = '';
-                                                
                                                 if (type === 'image') {
-                                                    const img = document.createElement('img');
-                                                    img.src = url;
-                                                    img.style.maxWidth = '100%';
-                                                    img.style.maxHeight = '100%';
-                                                    content.appendChild(img);
+                                                    const img = document.createElement('img'); img.src = url; img.style.maxWidth = '100%'; img.style.maxHeight = '100%'; content.appendChild(img);
                                                 } else if (type === 'audio') {
-                                                    const art = document.createElement('img');
-                                                    art.src = thumbUrl;
-                                                    art.className = 'music-art';
-                                                    art.onerror = function() { this.src = 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png'; };
-                                                    content.appendChild(art);
-                                                    
-                                                    const audio = document.createElement('audio');
-                                                    audio.src = url;
-                                                    audio.controls = true;
-                                                    audio.autoplay = true;
-                                                    audio.preload = 'metadata';
-                                                    content.appendChild(audio);
+                                                    const art = document.createElement('img'); art.src = thumbUrl; art.className = 'music-art'; art.onerror = function() { this.src = 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png'; }; content.appendChild(art);
+                                                    const audio = document.createElement('audio'); audio.src = url; audio.controls = true; audio.autoplay = true; audio.preload = 'metadata'; content.appendChild(audio);
                                                 } else if (type === 'video') {
-                                                    const video = document.createElement('video');
-                                                    video.src = url;
-                                                    video.controls = true;
-                                                    video.autoplay = true;
-                                                    video.preload = 'metadata';
-                                                    content.appendChild(video);
+                                                    const video = document.createElement('video'); video.src = url; video.controls = true; video.autoplay = true; video.preload = 'metadata'; content.appendChild(video);
                                                 } else if (type === 'text') {
-                                                    try {
-                                                        const response = await fetch(url);
-                                                        const text = await response.text();
-                                                        const pre = document.createElement('pre');
-                                                        pre.className = 'text-preview';
-                                                        pre.innerText = text;
-                                                        content.appendChild(pre);
-                                                    } catch (e) {
-                                                        content.innerHTML = '<p style="color:white">Error loading text file</p>';
-                                                    }
+                                                    try { const response = await fetch(url); const text = await response.text(); const pre = document.createElement('pre'); pre.className = 'text-preview'; pre.innerText = text; content.appendChild(pre); } catch (e) { content.innerHTML = '<p style="color:white">Error loading text file</p>'; }
                                                 } else if (type === 'pdf') {
-                                                    const iframe = document.createElement('iframe');
-                                                    iframe.src = url;
-                                                    content.appendChild(iframe);
+                                                    const iframe = document.createElement('iframe'); iframe.src = url; content.appendChild(iframe);
                                                 }
                                                 document.getElementById('preview-title').innerText = name;
                                             }
-                                            function closePreview() {
-                                                const overlay = document.getElementById('preview-overlay');
-                                                document.getElementById('preview-content').innerHTML = '';
-                                                overlay.style.display = 'none';
-                                            }
+                                            function closePreview() { document.getElementById('preview-overlay').style.display = 'none'; }
                                         """.trimIndent()
                                     }
                                 }
@@ -176,19 +205,13 @@ class FileServer(private val context: Context) {
                                                 parts.forEachIndexed { index, part ->
                                                     span(classes = "separator") { +"❯" }
                                                     cumulativePath += if (cumulativePath.isEmpty()) part else "/$part"
-                                                    if (index == parts.size - 1) {
-                                                        span(classes = "current") { +part }
-                                                    } else {
-                                                        a(href = "/?path=${cumulativePath.encodeURLParameter()}") { +part }
-                                                    }
+                                                    if (index == parts.size - 1) { span(classes = "current") { +part } } else { a(href = "/?path=${cumulativePath.encodeURLParameter()}") { +part } }
                                                 }
                                             }
                                         }
                                         ul {
                                             val files = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                                            if (files == null) {
-                                                li { +"⚠️ Permission Denied" }
-                                            } else {
+                                            if (files == null) { li { +"⚠️ Permission Denied" } } else {
                                                 files.forEach { file ->
                                                     val rel = file.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
                                                     val ext = file.extension.lowercase()
@@ -197,63 +220,21 @@ class FileServer(private val context: Context) {
                                                     val isAud = ext in listOf("mp3", "wav", "m4a", "flac")
                                                     val isTxt = ext in listOf("txt", "log", "json", "xml", "kt", "java", "html", "css", "js")
                                                     val isPdf = ext == "pdf"
-                                                    val previewType = when {
-                                                        isImg -> "image"; isVid -> "video"; isAud -> "audio"; isTxt -> "text"; isPdf -> "pdf"; else -> null
-                                                    }
+                                                    val previewType = when { isImg -> "image"; isVid -> "video"; isAud -> "audio"; isTxt -> "text"; isPdf -> "pdf"; else -> null }
                                                     li {
-                                                        div(classes = "thumb-container") {
-                                                            if (isImg || isVid || isAud) {
-                                                                img(src = "/thumbnail?path=${rel.encodeURLParameter()}") {
-                                                                    onError = "this.src='https://cdn-icons-png.flaticon.com/512/3844/3844724.png'"
-                                                                }
-                                                            } else {
-                                                                span(classes = "icon") {
-                                                                    +when { file.isDirectory -> "📁"; isTxt -> "📄"; isPdf -> "📕"; else -> "📄" }
-                                                                }
-                                                            }
-                                                        }
-                                                        div(classes = "file-info") {
-                                                            if (file.isDirectory) {
-                                                                a(href = "/?path=${rel.encodeURLParameter()}", classes = "file-name") { +file.name }
-                                                                div(classes = "file-meta") { +"Folder" }
-                                                            } else {
-                                                                span(classes = "file-name") {
-                                                                    if (previewType != null) {
-                                                                        onClick = "showPreview('/stream?path=${rel.encodeURLParameter()}', '$previewType', '${file.name}', '/thumbnail?path=${rel.encodeURLParameter()}')"
-                                                                    }
-                                                                    +file.name
-                                                                }
-                                                                div(classes = "file-meta") {
-                                                                    +"${file.length() / 1024} KB • ${file.extension.uppercase()}"
-                                                                }
-                                                            }
-                                                        }
-                                                        if (!file.isDirectory) {
-                                                            div(classes = "actions") {
-                                                                if (previewType != null) {
-                                                                    button(classes = "btn btn-preview") {
-                                                                        onClick = "showPreview('/stream?path=${rel.encodeURLParameter()}', '$previewType', '${file.name}', '/thumbnail?path=${rel.encodeURLParameter()}')"
-                                                                        +"Preview"
-                                                                    }
-                                                                }
-                                                                a(href = "/download?path=${rel.encodeURLParameter()}", classes = "btn btn-download") { +"Download" }
-                                                            }
-                                                        }
+                                                        div(classes = "thumb-container") { if (isImg || isVid || isAud) { img(src = "/thumbnail?path=${rel.encodeURLParameter()}") { onError = "this.src='https://cdn-icons-png.flaticon.com/512/3844/3844724.png'" } } else { span(classes = "icon") { +when { file.isDirectory -> "📁"; isTxt -> "📄"; isPdf -> "📕"; else -> "📄" } } } }
+                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=${rel.encodeURLParameter()}", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) onClick = "showPreview('/stream?path=${rel.encodeURLParameter()}', '$previewType', '${file.name}', '/thumbnail?path=${rel.encodeURLParameter()}')"; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
+                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { onClick = "showPreview('/stream?path=${rel.encodeURLParameter()}', '$previewType', '${file.name}', '/thumbnail?path=${rel.encodeURLParameter()}')"; +"Preview" }; a(href = "/download?path=${rel.encodeURLParameter()}", classes = "btn btn-download") { +"Download" } } }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                    div {
-                                        id = "preview-overlay"
-                                        span(classes = "close-btn") { onClick = "closePreview()"; +"×" }
-                                        h3 { id = "preview-title"; style = "color: white; margin-bottom: 20px;" }
-                                        div { id = "preview-content" }
-                                    }
+                                    div { id = "preview-overlay"; span(classes = "close-btn") { onClick = "closePreview()"; +"×" }; h3 { id = "preview-title"; style = "color: white; margin-bottom: 20px;" }; div { id = "preview-content" } }
                                 }
                             }
                         } else {
-                            // Show PIN Entry
+                            // PIN Entry
                             val html = """
                                 <!DOCTYPE html>
                                 <html lang="en">
@@ -262,6 +243,7 @@ class FileServer(private val context: Context) {
                                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
                                    <style>
                                        * { margin: 0; padding: 0; box-sizing: border-box; }
+                                       input::selection{background:0 0;color:#00a8ff}
                                        :root { --bg: #e7ebf0; --light: #ffffff; --dark: #b8c0ca; --text: #39424e; --accent: #00a8ff; --success: #16a085; --danger: #e74c3c; }
                                        body { min-height: 100vh; display: flex; justify-content: center; align-items: center; font-family: Arial, Helvetica, sans-serif; background: var(--bg); overflow: hidden; }
                                        body::before, body::after { content: ""; position: fixed; width: 280px; height: 280px; border-radius: 50%; filter: blur(80px); opacity: .25; z-index: -1; }
@@ -302,41 +284,50 @@ class FileServer(private val context: Context) {
                                        <div class="otp-card">
                                            <div id="otpForm">
                                                <div class="lock">🔐</div>
-                                               <h1>Verify Your OTP</h1>
-                                               <p class="description">Enter 4-digit verification code</p>
+                                               <h1>Transfer Authorization</h1>
+                                               <p class="description">Enter the security PIN shown on your phone to access files.</p>
                                                <div class="otp-inputs" id="otpInputs">
                                                    <input class="otp-input" type="text" inputmode="numeric" maxlength="1" autofocus>
                                                    <input class="otp-input" type="text" inputmode="numeric" maxlength="1">
                                                    <input class="otp-input" type="text" inputmode="numeric" maxlength="1">
                                                    <input class="otp-input" type="text" inputmode="numeric" maxlength="1">
                                                </div>
-                                               <button class="verify-btn" id="verifyBtn">VERIFY OTP</button>
+                                               <button class="verify-btn" id="verifyBtn">AUTHORIZE & CONNECT</button>
                                                <div class="message" id="message"></div>
                                            </div>
                                            <div class="success-screen" id="successScreen">
                                                <div class="success-icon">✓</div>
-                                               <h2>Verification Successful</h2>
-                                               <p>Your OTP has been verified successfully.</p>
+                                               <h2>Access Granted</h2>
+                                               <p>Connection established. Loading your files...</p>
                                            </div>
                                        </div>
                                    </div>
                                    <script>
-                                       const inputs = document.querySelectorAll('.otp-input');
+                                       const inputs = Array.from(document.querySelectorAll('.otp-input'));
                                        const btn = document.getElementById('verifyBtn');
                                        const msg = document.getElementById('message');
                                        const form = document.getElementById('otpForm');
                                        const success = document.getElementById('successScreen');
-                                       inputs.forEach((input, index) => {
+                                       inputs.forEach((input, idx) => {
+                                           input.addEventListener('focus', () => input.select());
                                            input.addEventListener('input', (e) => {
-                                               if (e.target.value.length === 1 && index < inputs.length - 1) inputs[index + 1].focus();
+                                               let val = e.target.value.replace(/[^0-9]/g, ''); val = val.slice(-1); e.target.value = val;
+                                               if (val && idx < inputs.length - 1) inputs[idx + 1].focus();
                                            });
                                            input.addEventListener('keydown', (e) => {
-                                               if (e.key === 'Backspace' && !e.target.value && index > 0) inputs[index - 1].focus();
+                                               if (e.key === 'Backspace' && !input.value && idx > 0) inputs[idx - 1].focus();
+                                               if (e.key === 'Enter') btn.click();
+                                           });
+                                           input.addEventListener('paste', (e) => {
+                                               e.preventDefault();
+                                               const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '');
+                                               pasted.split('').forEach((ch, i) => { if (inputs[idx + i]) inputs[idx + i].value = ch; });
+                                               const next = inputs[Math.min(idx + pasted.length, inputs.length - 1)]; next.focus();
                                            });
                                        });
                                        btn.addEventListener('click', async () => {
-                                           const pin = Array.from(inputs).map(i => i.value).join('');
-                                           if (pin.length !== 4) { msg.innerText = 'Please enter 4 digits'; msg.className = 'message error'; return; }
+                                           const pin = inputs.map(i => i.value).join('');
+                                           if (pin.length !== 4) { msg.innerText = 'Please enter the complete 4-digit PIN.'; msg.className = 'message error'; return; }
                                            try {
                                                const res = await fetch('/verify', {
                                                    method: 'POST',
@@ -344,15 +335,8 @@ class FileServer(private val context: Context) {
                                                    body: 'pin=' + pin
                                                });
                                                const text = await res.text();
-                                               if (text === 'OK') {
-                                                   form.style.display = 'none';
-                                                   success.style.display = 'block';
-                                                   setTimeout(() => window.location.reload(), 1000);
-                                               } else {
-                                                   msg.innerText = 'Invalid PIN'; msg.className = 'message error';
-                                                   form.classList.add('shake');
-                                                   setTimeout(() => form.classList.remove('shake'), 500);
-                                               }
+                                               if (text === 'OK') { form.style.display = 'none'; success.style.display = 'block'; setTimeout(() => window.location.reload(), 10); }
+                                               else { msg.innerText = 'Invalid PIN. Please try again.'; msg.className = 'message error'; form.classList.add('shake'); setTimeout(() => form.classList.remove('shake'), 500); }
                                            } catch (e) { msg.innerText = 'Server Error'; msg.className = 'message error'; }
                                        });
                                    </script>
@@ -367,7 +351,43 @@ class FileServer(private val context: Context) {
                         val params = call.receiveParameters()
                         val pin = params["pin"]
                         if (pin == currentPin) {
-                            call.sessions.set("VERIFIED")
+                            val token = UUID.randomUUID().toString()
+                            val clientIP = call.request.local.remoteHost
+                            val userAgent = call.request.headers["User-Agent"] ?: "Unknown"
+                            val osMatch = Regex("\\(([^)]+)\\)").find(userAgent)
+                            val osRaw = osMatch?.groupValues?.get(1) ?: "Unknown OS"
+                            
+                            val osParts = osRaw.split(";").map { it.trim() }
+                            val cleanOS = osParts.filter { part ->
+                                val p = part.lowercase()
+                                !p.contains("win64") && !p.contains("x64") && !p.contains("wow64") &&
+                                !p.contains("rv:") && !p.equals("k") &&
+                                !(p.equals("linux") && osRaw.contains("Android", true))
+                            }.map { part ->
+                                when {
+                                    part.contains("Windows NT 10.0") -> "Windows 10/11"
+                                    part.contains("Windows NT 6.3") -> "Windows 8.1"
+                                    part.contains("Windows NT 6.2") -> "Windows 8"
+                                    part.contains("Windows NT 6.1") -> "Windows 7"
+                                    else -> part
+                                }
+                            }.joinToString("; ")
+
+                            val browser = when {
+                                userAgent.contains("Edg/") -> "Edge"
+                                userAgent.contains("Firefox/") -> "Firefox"
+                                userAgent.contains("OPR/") || userAgent.contains("Opera/") -> "Opera"
+                                userAgent.contains("Chrome/") -> "Chrome"
+                                userAgent.contains("Safari/") -> "Safari"
+                                else -> "Browser"
+                            }
+                            val version = Regex("$browser/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
+                            
+                            val displayInfo = "$cleanOS|$browser|$version|$clientIP"
+                            activeSessions[token] = displayInfo
+                            saveSessions(context)
+                            notifyDevices()
+                            call.sessions.set(UserSession(token))
                             call.respondText("OK")
                         } else {
                             call.respondText("FAIL", status = HttpStatusCode.Unauthorized)
@@ -375,35 +395,41 @@ class FileServer(private val context: Context) {
                     }
 
                     get("/thumbnail") {
-                        val session = call.sessions.get<String>()
-                        if (session != "VERIFIED") return@get call.respond(HttpStatusCode.Forbidden)
-
+                        val session = call.sessions.get<UserSession>()
+                        if (session == null || !activeSessions.containsKey(session.token)) return@get call.respond(HttpStatusCode.Forbidden)
                         val root = Environment.getExternalStorageDirectory()
                         val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
                         val file = File(root, path.removePrefix("/"))
                         if (!file.exists()) return@get call.respond(HttpStatusCode.NotFound)
 
                         val ext = file.extension.lowercase()
-                        val bitmap: Bitmap? = if (ext in listOf("jpg", "jpeg", "png", "gif", "webp")) {
-                            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                            BitmapFactory.decodeFile(file.absolutePath, options)
-                            options.inSampleSize = calculateInSampleSize(options, 200, 200)
-                            options.inJustDecodeBounds = false
-                            BitmapFactory.decodeFile(file.absolutePath, options)
-                        } else if (ext in listOf("mp4", "mkv", "mov", "avi")) {
-                            val retriever = MediaMetadataRetriever()
-                            try {
-                                retriever.setDataSource(file.absolutePath)
-                                retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                            } catch (e: Exception) { null } finally { retriever.release() }
-                        } else if (ext in listOf("mp3", "wav", "m4a", "flac")) {
-                            val retriever = MediaMetadataRetriever()
-                            try {
-                                retriever.setDataSource(file.absolutePath)
-                                val art = retriever.embeddedPicture
-                                if (art != null) BitmapFactory.decodeByteArray(art, 0, art.size) else null
-                            } catch (e: Exception) { null } finally { retriever.release() }
-                        } else null
+                        val bitmap: Bitmap? = try {
+                            when {
+                                ext in listOf("jpg", "jpeg", "png", "gif", "webp") -> {
+                                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                    BitmapFactory.decodeFile(file.absolutePath, options)
+                                    options.inSampleSize = 4
+                                    options.inJustDecodeBounds = false
+                                    BitmapFactory.decodeFile(file.absolutePath, options)
+                                }
+                                ext in listOf("mp4", "mkv", "mov", "avi") -> {
+                                    val retriever = MediaMetadataRetriever()
+                                    try {
+                                        retriever.setDataSource(file.absolutePath)
+                                        retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                    } finally { retriever.release() }
+                                }
+                                ext in listOf("mp3", "wav", "m4a", "flac") -> {
+                                    val retriever = MediaMetadataRetriever()
+                                    try {
+                                        retriever.setDataSource(file.absolutePath)
+                                        val art = retriever.embeddedPicture
+                                        if (art != null) BitmapFactory.decodeByteArray(art, 0, art.size) else null
+                                    } finally { retriever.release() }
+                                }
+                                else -> null
+                            }
+                        } catch (e: Exception) { null }
 
                         if (bitmap != null) {
                             val stream = ByteArrayOutputStream()
@@ -415,52 +441,32 @@ class FileServer(private val context: Context) {
                     }
 
                     get("/stream") {
-                        val session = call.sessions.get<String>()
-                        if (session != "VERIFIED") return@get call.respond(HttpStatusCode.Forbidden)
-
+                        val session = call.sessions.get<UserSession>()
+                        if (session == null || !activeSessions.containsKey(session.token)) return@get call.respond(HttpStatusCode.Forbidden)
                         val root = Environment.getExternalStorageDirectory()
                         val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
                         val file = File(root, path.removePrefix("/"))
-                        if (file.exists() && !file.isDirectory) call.respondFile(file)
-                        else call.respondText("File not found", status = HttpStatusCode.NotFound)
+                        if (file.exists() && !file.isDirectory) call.respondFile(file) else call.respondText("File not found", status = HttpStatusCode.NotFound)
                     }
 
                     get("/download") {
-                        val session = call.sessions.get<String>()
-                        if (session != "VERIFIED") return@get call.respond(HttpStatusCode.Forbidden)
-
+                        val session = call.sessions.get<UserSession>()
+                        if (session == null || !activeSessions.containsKey(session.token)) return@get call.respond(HttpStatusCode.Forbidden)
                         val root = Environment.getExternalStorageDirectory()
                         val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
                         val file = File(root, path.removePrefix("/"))
-                        if (file.exists() && !file.isDirectory) {
-                            call.response.header(HttpHeaders.ContentDisposition, ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.name).toString())
-                            call.respondFile(file)
-                        } else call.respondText("File not found", status = HttpStatusCode.NotFound)
+                        if (file.exists() && !file.isDirectory) { call.response.header(HttpHeaders.ContentDisposition, ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.name).toString()); call.respondFile(file) } else call.respondText("File not found", status = HttpStatusCode.NotFound)
                     }
                 }
             }
             server = newServer
             newServer.start(wait = false)
-            Log.d("FileServer", "Server engine started")
-            onStarted("http://${getLocalIpAddress()}:$port", currentPin)
-        } catch (e: Exception) {
-            Log.e("FileServer", "Error starting server", e)
-            throw e
-        }
+            val ip = getLocalIpAddress()
+            lastUrl = "http://$ip:$port"
+            onStarted(lastUrl!!, currentPin)
+            notifyDevices() // Final sync
+        } catch (e: Exception) { Log.e("FileServer", "Error starting server", e); throw e }
     }
-
-    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
-        val (height: Int, width: Int) = options.outHeight to options.outWidth
-        var inSampleSize = 1
-        if (height > reqHeight || width > reqWidth) {
-            val halfHeight: Int = height / 2
-            val halfWidth: Int = width / 2
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) inSampleSize *= 2
-        }
-        return inSampleSize
-    }
-
-    fun stop() { stopServer() }
 
     private fun getLocalIpAddress(): String {
         try {
@@ -470,15 +476,11 @@ class FileServer(private val context: Context) {
                 val addresses = networkInterface.inetAddresses
                 while (addresses.hasMoreElements()) {
                     val address = addresses.nextElement()
-                    if (!address.isLoopbackAddress && address is InetAddress) {
-                        val host = address.hostAddress
-                        if (host != null && !host.contains(":")) return host
-                    }
+                    if (!address.isLoopbackAddress && address is InetAddress && !address.hostAddress!!.contains(":")) return address.hostAddress!!
                 }
             }
-        } catch (ex: Exception) { ex.printStackTrace() }
+        } catch (ex: Exception) { }
         return "127.0.0.1"
     }
 }
-
 fun String.encodeURLParameter(): String = URLEncoder.encode(this, "UTF-8")
