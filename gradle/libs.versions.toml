@@ -10,6 +10,7 @@ kotlin = "2.2.10"
 composeBom = "2026.02.01"
 ktor = "3.0.3"
 kotlinx-serialization = "1.7.3"
+zxing = "3.5.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -34,6 +35,7 @@ ktor-server-html-builder = { group = "io.ktor", name = "ktor-server-html-builder
 ktor-server-partial-content = { group = "io.ktor", name = "ktor-server-partial-content", version.ref = "ktor" }
 ktor-server-sessions = { group = "io.ktor", name = "ktor-server-sessions", version.ref = "ktor" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -128,7 +128,55 @@ class FileServer(private val context: Context) {
                 
                 routing {
                     get("/") {
-                        val session = call.sessions.get<UserSession>()
+                        var session = call.sessions.get<UserSession>()
+                        val queryPin = call.request.queryParameters["pin"]
+
+                        // Auto-login via QR code pin
+                        if (queryPin != null && queryPin == currentPin) {
+                            val token = UUID.randomUUID().toString()
+                            val clientIP = call.request.local.remoteHost
+                            val userAgent = call.request.headers["User-Agent"] ?: "Unknown"
+                            
+                            activeSessions[token] = parseDeviceInfo(userAgent, clientIP)
+                            saveSessions(context)
+                            call.sessions.set(UserSession(token))
+                            notifyDevices()
+                            
+                            // 100% Identical Success UI to Manual Login
+                            val successHtml = """
+                                <!DOCTYPE html>
+                                <html lang="en">
+                                <head>
+                                   <meta charset="UTF-8">
+                                   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                                   <style>
+                                       * { margin: 0; padding: 0; box-sizing: border-box; }
+                                       :root { --bg: #e7ebf0; --light: #ffffff; --dark: #b8c0ca; --text: #39424e; --accent: #00a8ff; --success: #16a085; --danger: #e74c3c; }
+                                       body { min-height: 100vh; display: flex; justify-content: center; align-items: center; font-family: Arial, Helvetica, sans-serif; background: var(--bg); overflow: hidden; }
+                                       .otp-card { position: relative; z-index: 2; background: var(--bg); border-radius: 25px; padding: 42px 35px; text-align: center; width: 420px; max-width: calc(100% - 30px); box-shadow: 18px 18px 35px rgba(163, 174, 187, .65), -18px -18px 35px rgba(255, 255, 255, .95); }
+                                       .success-screen { display: block; animation: successAppear .5s ease forwards; }
+                                       @keyframes successAppear { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
+                                       .success-icon { width: 100px; height: 100px; margin: 0 auto 25px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 50px; color: var(--success); background: var(--bg); box-shadow: inset 7px 7px 14px var(--dark), inset -7px -7px 14px var(--light), 8px 8px 18px rgba(163, 174, 187, .4), -8px -8px 18px rgba(255, 255, 255, .8); animation: successPop .7s cubic-bezier(.17, .67, .35, 1.4); }
+                                       @keyframes successPop { 0% { transform: scale(0) rotate(-90deg); } 70% { transform: scale(1.15) rotate(10deg); } 100% { transform: scale(1) rotate(0); } }
+                                       .success-screen h2 { color: var(--success); margin-bottom: 10px; }
+                                       .success-screen p { color: #77818d; font-size: 14px; line-height: 1.6; }
+                                   </style>
+                                </head>
+                                <body>
+                                    <div class="otp-card">
+                                        <div class="success-screen">
+                                            <div class="success-icon">✓</div>
+                                            <h2>Access Granted</h2>
+                                            <p>Connection established. Loading your files...</p>
+                                        </div>
+                                    </div>
+                                    <script>setTimeout(() => window.location.href = '/', 100);</script>
+                                </body>
+                                </html>
+                            """.trimIndent()
+                            return@get call.respondText(successHtml, ContentType.Text.Html)
+                        }
+
                         if (session != null && activeSessions.containsKey(session.token)) {
                             notifyDevices()
                             val root = Environment.getExternalStorageDirectory()
@@ -374,7 +422,7 @@ class FileServer(private val context: Context) {
                                                    body: 'pin=' + pin
                                                });
                                                const text = await res.text();
-                                               if (text === 'OK') { form.style.display = 'none'; success.style.display = 'block'; setTimeout(() => window.location.reload(), 10); }
+                                               if (text === 'OK') { form.style.display = 'none'; success.style.display = 'block'; setTimeout(() => window.location.reload(), 100); }
                                                else { msg.innerText = 'Invalid PIN. Please try again.'; msg.className = 'message error'; form.classList.add('shake'); setTimeout(() => form.classList.remove('shake'), 500); }
                                            } catch (e) { msg.innerText = 'Server Error'; msg.className = 'message error'; }
                                        });
@@ -394,65 +442,7 @@ class FileServer(private val context: Context) {
                             val clientIP = call.request.local.remoteHost
                             val userAgent = call.request.headers["User-Agent"] ?: "Unknown"
                             
-                            // 1. SpikE Debug Log (KEEP as requested)
-                            Log.d("FileServer", "SpikE => $userAgent")
-
-                            // 2. OS Extraction with Cleaning (RESTORED)
-                            val osMatch = Regex("\\(([^)]+)\\)").find(userAgent)
-                            val osRaw = osMatch?.groupValues?.get(1) ?: "Unknown OS"
-                            
-                            val cleanOS = osRaw.split(";").map { it.trim() }
-                                .filter { part ->
-                                    val p = part.lowercase()
-                                    p.length > 2 && 
-                                    !p.contains("win64") && !p.contains("x64") && !p.contains("wow64") &&
-                                    !p.contains("rv:") && !p.equals("k") && !p.equals("u") &&
-                                    !p.matches(Regex("[a-z]{2}-[a-z]{2}")) && 
-                                    !(p.equals("linux") && osRaw.contains("Android", true))
-                                }.map { part ->
-                                    when {
-                                        part.contains("Windows NT 10.0") -> "Windows 10/11"
-                                        part.contains("Windows NT 6.3") -> "Windows 8.1"
-                                        part.contains("Windows NT 6.2") -> "Windows 8"
-                                        part.contains("Windows NT 6.1") -> "Windows 7"
-                                        else -> part
-                                    }
-                                }.joinToString("; ")
-
-                            // 3. Browser & Version Detection
-                            val (bName, bVer) = when {
-                                userAgent.contains("Edg/") || userAgent.contains("EdgA/") -> {
-                                    val v = Regex("Edg[A]?/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
-                                    "Edge" to v
-                                }
-                                userAgent.contains("OPR/") || userAgent.contains("Opera/") -> {
-                                    val v = Regex("(?:OPR|Opera)/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
-                                    "Opera" to v
-                                }
-                                userAgent.contains("UCBrowser/") -> {
-                                    val v = Regex("UCBrowser/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
-                                    "UCBrowser" to v
-                                }
-                                userAgent.contains("Firefox/") -> {
-                                    val v = Regex("Firefox/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
-                                    "Firefox" to v
-                                }
-                                userAgent.contains("Chrome/") -> {
-                                    val v = Regex("Chrome/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
-                                    "Chrome" to v
-                                }
-                                userAgent.contains("Safari/") -> {
-                                    val v = Regex("Version/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?"
-                                    "Safari" to v
-                                }
-                                else -> "Browser" to "?"
-                            }
-                            
-                            // 4. Final display info: OS|Name|Ver|IP
-                            val cleanVer = bVer.substringBefore(".")
-                            val displayInfo = "$cleanOS|$bName|$cleanVer|$clientIP"
-                            
-                            activeSessions[token] = displayInfo
+                            activeSessions[token] = parseDeviceInfo(userAgent, clientIP)
                             saveSessions(context)
                             notifyDevices()
                             call.sessions.set(UserSession(token))
@@ -534,6 +524,42 @@ class FileServer(private val context: Context) {
             onStarted(lastUrl!!, currentPin)
             notifyDevices()
         } catch (e: Exception) { Log.e("FileServer", "Error starting server", e); throw e }
+    }
+
+    private fun parseDeviceInfo(userAgent: String, clientIP: String): String {
+
+        // 1. OS Extraction
+        val osMatch = Regex("\\(([^)]+)\\)").find(userAgent)
+        val osRaw = osMatch?.groupValues?.get(1) ?: "Unknown OS"
+        val cleanOS = osRaw.split(";").map { it.trim() }
+            .filter { part ->
+                val p = part.lowercase()
+                p.length > 2 && !p.contains("win64") && !p.contains("x64") && !p.contains("wow64") &&
+                !p.contains("rv:") && !p.equals("k") && !p.equals("u") &&
+                !p.matches(Regex("[a-z]{2}-[a-z]{2}")) && 
+                !(p.equals("linux") && userAgent.contains("Android", true))
+            }.map { part ->
+                when {
+                    part.contains("Windows NT 10.0") -> "Windows 10/11"
+                    part.contains("Windows NT 6.3") -> "Windows 8.1"
+                    part.contains("Windows NT 6.1") -> "Windows 7"
+                    else -> part
+                }
+            }.joinToString("; ")
+
+        // 2. Browser Detection
+        val (bName, bVer) = when {
+            userAgent.contains("Edg") -> "Edge" to (Regex("Edg[A]?/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?")
+            userAgent.contains("OPR") || userAgent.contains("Opera") -> "Opera" to (Regex("(?:OPR|Opera)/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?")
+            userAgent.contains("UCBrowser") -> "UCBrowser" to (Regex("UCBrowser/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?")
+            userAgent.contains("Firefox") -> "Firefox" to (Regex("Firefox/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?")
+            userAgent.contains("Chrome") -> "Chrome" to (Regex("Chrome/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?")
+            userAgent.contains("Safari") -> "Safari" to (Regex("Version/([^ ]+)").find(userAgent)?.groupValues?.get(1) ?: "?")
+            else -> "Browser" to "?"
+        }
+        
+        val cleanVer = bVer.substringBefore(".")
+        return "$cleanOS|$bName|$cleanVer|$clientIP"
     }
 
     private fun getLocalIpAddress(): String {

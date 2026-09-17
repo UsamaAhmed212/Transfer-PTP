@@ -1,6 +1,9 @@
 package com.example.transferptp
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -17,6 +20,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -35,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -43,6 +48,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.example.transferptp.ui.theme.TransferPTPTheme
 import java.text.SimpleDateFormat
@@ -74,9 +80,11 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
     var serverPin by remember { mutableStateOf<String?>(null) }
     var isRunning by remember { mutableStateOf(false) }
     var hasPermission by remember { mutableStateOf(false) }
+    var showQRDialog by remember { mutableStateOf(false) }
     val connectedDevices = remember { mutableStateListOf<DeviceConnection>() }
 
     fun checkStoragePermission() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+    
     LaunchedEffect(Unit) { 
         hasPermission = checkStoragePermission()
         if (FileServer.isServerRunning()) {
@@ -92,7 +100,12 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
             })
         }
     }
+    
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPermission = it }
+
+    if (showQRDialog && serverUrl != null && serverPin != null) {
+        LoginQRDialog(url = serverUrl!!, pin = serverPin!!, onDismiss = { showQRDialog = false })
+    }
 
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         // --- COMPACT HEADER ---
@@ -176,7 +189,9 @@ fun TransferScreen(fileServer: FileServer, modifier: Modifier = Modifier) {
         // --- BOTTOM NAVIGATION ---
         Row(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             ActionButton(text = "Scan", icon = Icons.Outlined.QrCodeScanner, containerColor = Color(0xFF6366F1), contentColor = Color.White, modifier = Modifier.weight(1f)) { }
-            ActionButton(text = "Login QR", icon = Icons.Default.QrCode, containerColor = Color(0xFF1E293B), contentColor = Color.White, modifier = Modifier.weight(1f)) { }
+            ActionButton(text = "Login QR", icon = Icons.Default.QrCode, containerColor = Color(0xFF1E293B), contentColor = Color.White, modifier = Modifier.weight(1f)) { 
+                if (isRunning) showQRDialog = true else Toast.makeText(context, "Start Server first", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }
@@ -232,12 +247,7 @@ fun ActiveServerCard(url: String, pin: String, onStop: () -> Unit) {
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Security, 
-                        contentDescription = null, 
-                        tint = Color(0xFF94A3B8),
-                        modifier = Modifier.size(13.dp)
-                    )
+                    Icon(imageVector = Icons.Default.Security, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(text = "Authorization PIN: ", fontSize = 10.sp, color = Color(0xFF94A3B8))
                     Text(text = pin, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1E293B), letterSpacing = 2.sp)
@@ -253,6 +263,78 @@ fun ActiveServerCard(url: String, pin: String, onStop: () -> Unit) {
                 Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("STOP", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun LoginQRDialog(url: String, pin: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val fullUrl = "$url?pin=$pin"
+    val qrBitmap = remember(fullUrl) { QRCodeGenerator.generate(fullUrl) }
+    
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(0.dp),
+            shape = RoundedCornerShape(2.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(text = "Scan to Connect", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1E293B))
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Scan this QR code with any device to quickly access the server", 
+                    fontSize = 13.sp, 
+                    color = Color(0xFF64748B),
+                    textAlign = TextAlign.Center,
+                    lineHeight = 14.sp
+                )
+                
+                Spacer(modifier = Modifier.height(15.dp))
+                
+                Image(
+                    bitmap = qrBitmap.asImageBitmap(),
+                    contentDescription = "Login QR Code",
+                    modifier = Modifier.size(240.dp)
+                )
+                
+                Text(text = fullUrl, fontSize = 12.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                
+                Spacer(modifier = Modifier.height(5.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(
+                            text = "CANCEL",
+                            color = Color(0xFF6366F1),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("Server URL", fullUrl)
+                        clipboard.setPrimaryClip(clip)
+                        Toast.makeText(context, "URL Copied to Clipboard", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text(
+                            text = "COPY TO CLIPBOARD",
+                            color = Color(0xFF6366F1),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
             }
         }
     }
