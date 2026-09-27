@@ -21,6 +21,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
 import io.ktor.util.*
+import io.ktor.util.reflect.typeInfo
 import kotlinx.html.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -30,6 +31,7 @@ import java.io.File
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -37,9 +39,83 @@ import java.util.concurrent.ConcurrentHashMap
 @Serializable
 data class UserSession(val token: String)
 
+private const val THUMBNAIL_SIZE = 256
+private val THUMBNAIL_CONTENT_TYPE = ContentType("image", "webp")
+
+private class ThumbnailCache(private val directory: File) {
+    private val memoryCache = object : LruCache<String, ByteArray>(MAX_MEMORY_BYTES) {
+        override fun sizeOf(key: String, value: ByteArray): Int = value.size
+    }
+
+    @Synchronized
+    fun get(key: String): ByteArray? {
+        val diskFile = fileFor(key)
+        memoryCache.get(key)?.let { bytes ->
+            diskFile.setLastModified(System.currentTimeMillis())
+            return bytes
+        }
+
+        if (!diskFile.isFile) return null
+        return try {
+            val bytes = diskFile.readBytes()
+            diskFile.setLastModified(System.currentTimeMillis())
+            memoryCache.put(key, bytes)
+            bytes
+        } catch (e: Exception) {
+            diskFile.delete()
+            null
+        }
+    }
+
+    @Synchronized
+    fun put(key: String, bytes: ByteArray) {
+        memoryCache.put(key, bytes)
+        try {
+            if (!directory.exists() && !directory.mkdirs()) return
+
+            val target = fileFor(key)
+            val temporary = File(directory, "${target.name}.tmp")
+            temporary.outputStream().use { it.write(bytes) }
+            if (target.exists()) target.delete()
+            if (!temporary.renameTo(target)) {
+                temporary.copyTo(target, overwrite = true)
+                temporary.delete()
+            }
+            target.setLastModified(System.currentTimeMillis())
+            trimDiskCache()
+        } catch (e: Exception) {
+            File(directory, "${fileNameFor(key)}.webp.tmp").delete()
+        }
+    }
+
+    private fun trimDiskCache() {
+        val files = directory.listFiles()?.filter { it.isFile && it.extension == "webp" } ?: return
+        var totalBytes = files.sumOf { it.length() }
+        for (file in files.sortedBy { it.lastModified() }) {
+            if (totalBytes <= MAX_DISK_BYTES) break
+            val fileLength = file.length()
+            if (file.delete()) totalBytes -= fileLength
+        }
+    }
+
+    private fun fileFor(key: String): File = File(directory, "${fileNameFor(key)}.webp")
+
+    private fun fileNameFor(key: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(key.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
+
+    companion object {
+        private const val MAX_MEMORY_BYTES = 15 * 1024 * 1024
+        private const val MAX_DISK_BYTES = 128L * 1024 * 1024
+    }
+}
+
 class FileServer(private val context: Context) {
     
     private var currentPin: String = ""
+    private val thumbnailCache by lazy {
+        ThumbnailCache(File(context.cacheDir, "thumbnail_cache"))
+    }
     
     companion object {
         private var server: EmbeddedServer<*, *>? = null
@@ -50,9 +126,6 @@ class FileServer(private val context: Context) {
         private var lastUrl: String? = null
         private var lastPin: String? = null
         private var serverSecret: String = ""
-        private val thumbnailCache = object : LruCache<String, ByteArray>(15 * 1024 * 1024) {
-            override fun sizeOf(key: String, value: ByteArray): Int = value.size
-        }
 
         private fun isEtagMatch(header: String?, targetEtag: String): Boolean {
             if (header == null) return false
@@ -153,7 +226,7 @@ class FileServer(private val context: Context) {
                     ServerService.notifyRequestReceived(this@FileServer.context)
                 }
                 install(Sessions) {
-                    cookie<UserSession>("USER_SESSION") {
+                    cookie<UserSession>("USER_SESSION", typeInfo<UserSession>()) {
                         cookie.path = "/"
                         transform(SessionTransportTransformerMessageAuthentication(serverSecret.toByteArray()))
                         cookie.maxAgeInSeconds = 31536000 
@@ -318,7 +391,7 @@ class FileServer(private val context: Context) {
                                                     val isPdf = ext == "pdf"
                                                     val previewType = when { isImg -> "image"; isVid -> "video"; isAud -> "audio"; isTxt -> "text"; isPdf -> "pdf"; else -> null }
                                                     val encodedRel = rel.encodeURLParameter()
-                                                    val fileVer = "${file.lastModified()}_${file.length()}"
+                                                    val fileVer = "${file.lastModified()}_${file.length()}_webp256"
                                                     val thumbUrl = "/thumbnail?path=$encodedRel&v=$fileVer"
                                                     val streamUrl = "/stream?path=$encodedRel&v=$fileVer"
                                                     val downloadUrl = "/download?path=$encodedRel"
@@ -603,7 +676,7 @@ class FileServer(private val context: Context) {
                         val file = File(root, path.removePrefix("/"))
                         if (!file.exists()) return@get call.respond(HttpStatusCode.NotFound)
 
-                        val etag = "\"thumb-${file.lastModified()}-${file.length()}\""
+                        val etag = "\"thumb-webp256-${file.lastModified()}-${file.length()}\""
                         val clientEtag = call.request.headers[HttpHeaders.IfNoneMatch]
                         val vParam = call.request.queryParameters["v"]
 
@@ -618,47 +691,32 @@ class FileServer(private val context: Context) {
                             return@get call.respond(HttpStatusCode.NotModified)
                         }
 
-                        val cacheKey = "${file.absolutePath}:${file.lastModified()}:${file.length()}"
+                        val cacheKey = "webp256-rgb565:${file.absolutePath}:${file.lastModified()}:${file.length()}"
                         val cachedBytes = thumbnailCache.get(cacheKey)
                         if (cachedBytes != null) {
-                            return@get call.respondBytes(cachedBytes, ContentType.Image.JPEG)
+                            return@get call.respondBytes(cachedBytes, THUMBNAIL_CONTENT_TYPE)
                         }
 
-                        val ext = file.extension.lowercase()
-                        val bitmap: Bitmap? = try {
-                            when {
-                                ext in listOf("jpg", "jpeg", "png", "gif", "webp") -> {
-                                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                    BitmapFactory.decodeFile(file.absolutePath, options)
-                                    options.inSampleSize = 4
-                                    options.inJustDecodeBounds = false
-                                    BitmapFactory.decodeFile(file.absolutePath, options)
-                                }
-                                ext in listOf("mp4", "mkv", "mov", "avi") -> {
-                                    val retriever = MediaMetadataRetriever()
-                                    try {
-                                        retriever.setDataSource(file.absolutePath)
-                                        retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                                    } finally { retriever.release() }
-                                }
-                                ext in listOf("mp3", "wav", "m4a", "flac") -> {
-                                    val retriever = MediaMetadataRetriever()
-                                    try {
-                                        retriever.setDataSource(file.absolutePath)
-                                        val art = retriever.embeddedPicture
-                                        if (art != null) BitmapFactory.decodeByteArray(art, 0, art.size) else null
-                                    } finally { retriever.release() }
-                                }
-                                else -> null
-                            }
-                        } catch (e: Exception) { null }
+                        val bitmap = createThumbnail(file)
 
                         if (bitmap != null) {
-                            val stream = ByteArrayOutputStream()
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                            val bytes = stream.toByteArray()
+                            val bytes = try {
+                                ByteArrayOutputStream().use { stream ->
+                                    val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                        Bitmap.CompressFormat.WEBP_LOSSY
+                                    } else {
+                                        Bitmap.CompressFormat.WEBP
+                                    }
+                                    if (!bitmap.compress(format, 80, stream)) {
+                                        throw IllegalStateException("WebP thumbnail compression failed")
+                                    }
+                                    stream.toByteArray()
+                                }
+                            } finally {
+                                bitmap.recycle()
+                            }
                             thumbnailCache.put(cacheKey, bytes)
-                            call.respondBytes(bytes, ContentType.Image.JPEG)
+                            call.respondBytes(bytes, THUMBNAIL_CONTENT_TYPE)
                         } else {
                             call.respond(HttpStatusCode.NotFound)
                         }
@@ -720,6 +778,104 @@ class FileServer(private val context: Context) {
             onStarted(lastUrl!!, currentPin)
             notifyDevices() // Final sync
         } catch (e: Exception) { Log.e("FileServer", "Error starting server", e); throw e }
+    }
+
+    private fun createThumbnail(file: File): Bitmap? {
+        return try {
+            when (file.extension.lowercase()) {
+                "jpg", "jpeg", "png", "gif", "webp" -> decodeImageThumbnail(file)
+                "mp4", "mkv", "mov", "avi" -> {
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(file.absolutePath)
+                        retriever.getScaledFrameAtTime(
+                            1_000_000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            THUMBNAIL_SIZE,
+                            THUMBNAIL_SIZE
+                        )?.let(::prepareThumbnail)
+                    } finally {
+                        retriever.release()
+                    }
+                }
+                "mp3", "wav", "m4a", "flac" -> {
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(file.absolutePath)
+                        retriever.embeddedPicture?.let(::decodeArtworkThumbnail)
+                    } finally {
+                        retriever.release()
+                    }
+                }
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun decodeImageThumbnail(file: File): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight)
+            inPreferredConfig = Bitmap.Config.RGB_565
+            inDither = true
+        }
+        return BitmapFactory.decodeFile(file.absolutePath, options)?.let(::prepareThumbnail)
+    }
+
+    private fun decodeArtworkThumbnail(artwork: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(artwork, 0, artwork.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight)
+            inPreferredConfig = Bitmap.Config.RGB_565
+            inDither = true
+        }
+        return BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options)?.let(::prepareThumbnail)
+    }
+
+    private fun calculateInSampleSize(width: Int, height: Int): Int {
+        var sampleSize = 1
+        val largestDimension = maxOf(width, height)
+        while (largestDimension / (sampleSize * 2) >= THUMBNAIL_SIZE) {
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
+
+    private fun prepareThumbnail(source: Bitmap): Bitmap {
+        var bitmap = source
+        try {
+            val largestDimension = maxOf(bitmap.width, bitmap.height)
+            if (largestDimension > THUMBNAIL_SIZE) {
+                val scale = THUMBNAIL_SIZE.toFloat() / largestDimension
+                val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
+                val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+                if (scaled !== bitmap) {
+                    bitmap.recycle()
+                    bitmap = scaled
+                }
+            }
+
+            if (bitmap.config != Bitmap.Config.RGB_565) {
+                val rgb565 = bitmap.copy(Bitmap.Config.RGB_565, false)
+                if (rgb565 != null) {
+                    bitmap.recycle()
+                    bitmap = rgb565
+                }
+            }
+            return bitmap
+        } catch (e: Exception) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            throw e
+        }
     }
 
     private fun parseDeviceInfo(userAgent: String, clientIP: String): String {
