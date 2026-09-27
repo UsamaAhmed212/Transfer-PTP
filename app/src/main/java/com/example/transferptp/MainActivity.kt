@@ -72,6 +72,11 @@ import java.util.*
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import android.app.ActivityManager
+import android.os.PowerManager
+import android.os.Process
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -81,6 +86,11 @@ class MainActivity : ComponentActivity() {
     private var fileServer: FileServer? = null
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
         fileServer = FileServer(this)
         enableEdgeToEdge()
         setContent {
@@ -89,9 +99,61 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(), 
                     containerColor = Color(0xFFF7F9FC) 
                 ) { innerPadding ->
+                    TrackAppPriorityState(this)
                     TransferScreen(fileServer = fileServer!!, modifier = Modifier.padding(innerPadding))
                 }
             }
+        }
+    }
+}
+
+fun checkAppPriorityState(context: Context) {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    val appProcesses = activityManager.runningAppProcesses ?: return
+    val myProcess = appProcesses.find { it.pid == Process.myPid() }
+
+    val importance = myProcess?.importance
+    val priorityText = when (importance) {
+        ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND -> "🟢 HIGH (Foreground - App on Screen)"
+        ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE -> "🟡 MEDIUM-HIGH (Foreground Service Running)"
+        ActivityManager.RunningAppProcessInfo.IMPORTANCE_BACKGROUND -> "🔴 LOW (Background - CPU & Network Throttled)"
+        ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED -> "🔴 VERY LOW (Cached Background)"
+        else -> "UNKNOWN ($importance)"
+    }
+
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    val isBatteryOptimized = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        !powerManager.isIgnoringBatteryOptimizations(context.packageName)
+    } else false
+
+    Log.d("AppPriorityCheck", "========================================")
+    Log.d("AppPriorityCheck", "App Priority Level : $priorityText")
+    Log.d("AppPriorityCheck", "Battery Optimized  : $isBatteryOptimized (If true, background streams will be slow)")
+    Log.d("AppPriorityCheck", "========================================")
+}
+
+@Composable
+fun TrackAppPriorityState(context: Context) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    Log.d("AppPriorityCheck", "🟢 App came to FOREGROUND -> High Priority Restored")
+                    checkAppPriorityState(context)
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    Log.d("AppPriorityCheck", "🔴 App went to BACKGROUND -> Priority Dropped / Throttling Active")
+                    checkAppPriorityState(context)
+                }
+                else -> {}
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 }

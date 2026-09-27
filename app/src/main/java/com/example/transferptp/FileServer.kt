@@ -9,6 +9,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.util.LruCache
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.cio.*
@@ -49,6 +50,18 @@ class FileServer(private val context: Context) {
         private var lastUrl: String? = null
         private var lastPin: String? = null
         private var serverSecret: String = ""
+        private val thumbnailCache = object : LruCache<String, ByteArray>(15 * 1024 * 1024) {
+            override fun sizeOf(key: String, value: ByteArray): Int = value.size
+        }
+
+        private fun isEtagMatch(header: String?, targetEtag: String): Boolean {
+            if (header == null) return false
+            val cleanTarget = targetEtag.removePrefix("W/").trim(' ', '"')
+            return header.split(",").any { tag ->
+                val cleanTag = tag.trim().removePrefix("W/").trim(' ', '"')
+                cleanTag == "*" || cleanTag == cleanTarget
+            }
+        }
 
         fun isServerRunning(): Boolean = server != null
         fun getSavedUrl(): String? = lastUrl
@@ -136,6 +149,9 @@ class FileServer(private val context: Context) {
 
         try {
             val newServer = embeddedServer(CIO, port = port) {
+                intercept(ApplicationCallPipeline.Plugins) {
+                    ServerService.notifyRequestReceived(this@FileServer.context)
+                }
                 install(Sessions) {
                     cookie<UserSession>("USER_SESSION") {
                         cookie.path = "/"
@@ -301,10 +317,16 @@ class FileServer(private val context: Context) {
                                                     val isTxt = ext in listOf("txt", "log", "json", "xml", "kt", "java", "html", "css", "js")
                                                     val isPdf = ext == "pdf"
                                                     val previewType = when { isImg -> "image"; isVid -> "video"; isAud -> "audio"; isTxt -> "text"; isPdf -> "pdf"; else -> null }
+                                                    val encodedRel = rel.encodeURLParameter()
+                                                    val fileVer = "${file.lastModified()}_${file.length()}"
+                                                    val thumbUrl = "/thumbnail?path=$encodedRel&v=$fileVer"
+                                                    val streamUrl = "/stream?path=$encodedRel&v=$fileVer"
+                                                    val downloadUrl = "/download?path=$encodedRel"
+                                                    val safeName = file.name.replace("\\", "\\\\").replace("'", "\\'")
                                                     li {
-                                                        div(classes = "thumb-container") { if (isImg || isVid || isAud) { img(src = "/thumbnail?path=${rel.encodeURLParameter()}") { onError = "this.src='https://cdn-icons-png.flaticon.com/512/3844/3844724.png'" } } else { span(classes = "icon") { +when { file.isDirectory -> "📁"; isTxt -> "📄"; isPdf -> "📕"; else -> "📄" } } } }
-                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=${rel.encodeURLParameter()}", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) onClick = "showPreview('/stream?path=${rel.encodeURLParameter()}', '$previewType', '${file.name}', '/thumbnail?path=${rel.encodeURLParameter()}')"; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
-                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { onClick = "showPreview('/stream?path=${rel.encodeURLParameter()}', '$previewType', '${file.name}', '/thumbnail?path=${rel.encodeURLParameter()}')"; +"Preview" }; a(href = "/download?path=${rel.encodeURLParameter()}", classes = "btn btn-download") { +"Download" } } }
+                                                        div(classes = "thumb-container") { if (isImg || isVid || isAud) { img(src = thumbUrl) { onError = "this.src='https://cdn-icons-png.flaticon.com/512/3844/3844724.png'" } } else { span(classes = "icon") { +when { file.isDirectory -> "📁"; isTxt -> "📄"; isPdf -> "📕"; else -> "📄" } } } }
+                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) onClick = "showPreview('$streamUrl', '$previewType', '$safeName', '$thumbUrl')"; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
+                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { onClick = "showPreview('$streamUrl', '$previewType', '$safeName', '$thumbUrl')"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { +"Download" } } }
                                                     }
                                                 }
                                             }
@@ -555,6 +577,27 @@ class FileServer(private val context: Context) {
                         val file = File(root, path.removePrefix("/"))
                         if (!file.exists()) return@get call.respond(HttpStatusCode.NotFound)
 
+                        val etag = "\"thumb-${file.lastModified()}-${file.length()}\""
+                        val clientEtag = call.request.headers[HttpHeaders.IfNoneMatch]
+                        val vParam = call.request.queryParameters["v"]
+
+                        if (vParam != null) {
+                            call.response.header(HttpHeaders.CacheControl, "public, max-age=31536000, immutable")
+                        } else {
+                            call.response.header(HttpHeaders.CacheControl, "no-cache")
+                        }
+                        call.response.header(HttpHeaders.ETag, etag)
+
+                        if (isEtagMatch(clientEtag, etag)) {
+                            return@get call.respond(HttpStatusCode.NotModified)
+                        }
+
+                        val cacheKey = "${file.absolutePath}:${file.lastModified()}:${file.length()}"
+                        val cachedBytes = thumbnailCache.get(cacheKey)
+                        if (cachedBytes != null) {
+                            return@get call.respondBytes(cachedBytes, ContentType.Image.JPEG)
+                        }
+
                         val ext = file.extension.lowercase()
                         val bitmap: Bitmap? = try {
                             when {
@@ -587,7 +630,9 @@ class FileServer(private val context: Context) {
                         if (bitmap != null) {
                             val stream = ByteArrayOutputStream()
                             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                            call.respondBytes(stream.toByteArray(), ContentType.Image.JPEG)
+                            val bytes = stream.toByteArray()
+                            thumbnailCache.put(cacheKey, bytes)
+                            call.respondBytes(bytes, ContentType.Image.JPEG)
                         } else {
                             call.respond(HttpStatusCode.NotFound)
                         }
@@ -599,7 +644,25 @@ class FileServer(private val context: Context) {
                         val root = Environment.getExternalStorageDirectory()
                         val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
                         val file = File(root, path.removePrefix("/"))
-                        if (file.exists() && !file.isDirectory) call.respondFile(file) else call.respondText("File not found", status = HttpStatusCode.NotFound)
+                        if (file.exists() && !file.isDirectory) {
+                            val etag = "\"stream-${file.lastModified()}-${file.length()}\""
+                            val clientEtag = call.request.headers[HttpHeaders.IfNoneMatch]
+                            val vParam = call.request.queryParameters["v"]
+
+                            if (vParam != null) {
+                                call.response.header(HttpHeaders.CacheControl, "public, max-age=31536000, immutable")
+                            } else {
+                                call.response.header(HttpHeaders.CacheControl, "no-cache")
+                            }
+                            call.response.header(HttpHeaders.ETag, etag)
+
+                            if (isEtagMatch(clientEtag, etag)) {
+                                return@get call.respond(HttpStatusCode.NotModified)
+                            }
+                            call.respondFile(file)
+                        } else {
+                            call.respondText("File not found", status = HttpStatusCode.NotFound)
+                        }
                     }
 
                     get("/download") {
@@ -608,7 +671,19 @@ class FileServer(private val context: Context) {
                         val root = Environment.getExternalStorageDirectory()
                         val path = call.parameters["path"] ?: return@get call.respondText("Missing path")
                         val file = File(root, path.removePrefix("/"))
-                        if (file.exists() && !file.isDirectory) { call.response.header(HttpHeaders.ContentDisposition, ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.name).toString()); call.respondFile(file) } else call.respondText("File not found", status = HttpStatusCode.NotFound)
+                        if (file.exists() && !file.isDirectory) {
+                            val etag = "\"dl-${file.lastModified()}-${file.length()}\""
+                            val clientEtag = call.request.headers[HttpHeaders.IfNoneMatch]
+
+                            call.response.header(HttpHeaders.CacheControl, "no-cache")
+                            call.response.header(HttpHeaders.ETag, etag)
+                            call.response.header(HttpHeaders.ContentDisposition, ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.name).toString())
+
+                            if (isEtagMatch(clientEtag, etag)) {
+                                return@get call.respond(HttpStatusCode.NotModified)
+                            }
+                            call.respondFile(file)
+                        } else call.respondText("File not found", status = HttpStatusCode.NotFound)
                     }
                 }
             }
