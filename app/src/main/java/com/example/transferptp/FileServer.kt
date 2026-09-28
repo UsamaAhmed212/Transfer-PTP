@@ -306,6 +306,11 @@ class FileServer(private val context: Context) {
                                             li { display: flex; align-items: center; padding: 5px; border-bottom: 1px solid #eee; }
                                             .thumb-container { width: 60px; height: 60px; margin-right: 15px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 8px; overflow: hidden; flex-shrink: 0; }
                                             .thumb-container img { width: 100%; height: 100%; object-fit: cover; }
+                                            .thumb-container img.ph { background-color: #f0f0f0; background-position: center; background-repeat: no-repeat; background-size: contain; }
+                                            .thumb-container img.ph-image { background-image: url('$FALLBACK_IMAGE_SVG'); }
+                                            .thumb-container img.ph-video { background-image: url('$FALLBACK_VIDEO_SVG'); }
+                                            .thumb-container img.ph-audio { background-image: url('$FALLBACK_AUDIO_SVG'); }
+                                            .thumb-container img.ph.done { background-image: none; }
                                             .icon { font-size: 1.5rem; }
                                             .file-info { flex-grow: 1; min-width: 0; }
                                             .file-name { font-weight: 500; color: #007bff; text-decoration: none; word-break: break-all; cursor: pointer; }
@@ -325,13 +330,26 @@ class FileServer(private val context: Context) {
                                     }
                                     script {
                                         +"""
+                                            function openPreview(elem) {
+                                                const url = elem.getAttribute('data-url');
+                                                const type = elem.getAttribute('data-type');
+                                                const name = elem.getAttribute('data-name');
+                                                const thumbUrl = elem.getAttribute('data-thumb');
+                                                showPreview(url, type, name, thumbUrl);
+                                            }
+
                                             async function showPreview(url, type, name, thumbUrl) {
                                                 const overlay = document.getElementById('preview-overlay');
                                                 const content = document.getElementById('preview-content');
                                                 overlay.style.display = 'flex';
                                                 content.innerHTML = '';
                                                 if (type === 'image') {
-                                                    const img = document.createElement('img'); img.src = url; img.style.maxWidth = '100%'; img.style.maxHeight = '100%'; content.appendChild(img);
+                                                    const img = document.createElement('img');
+                                                    img.src = url;
+                                                    img.onerror = function() { if (thumbUrl) this.src = thumbUrl; };
+                                                    img.style.maxWidth = '100%';
+                                                    img.style.maxHeight = '100%';
+                                                    content.appendChild(img);
                                                 } else if (type === 'audio') {
                                                     const art = document.createElement('img'); art.src = thumbUrl; art.className = 'music-art'; art.onerror = function() { this.src = '$FALLBACK_AUDIO_SVG'; }; content.appendChild(art);
                                                     const audio = document.createElement('audio'); audio.src = url; audio.controls = true; audio.autoplay = true; audio.preload = 'metadata'; content.appendChild(audio);
@@ -347,6 +365,48 @@ class FileServer(private val context: Context) {
                                             function closePreview() { 
                                                 document.getElementById('preview-content').innerHTML = '';
                                                 document.getElementById('preview-overlay').style.display = 'none'; 
+                                            }
+
+                                            function loadViewportImages() {
+                                                var lazyImages = document.querySelectorAll('img[data-src]');
+
+                                                if (!lazyImages || !lazyImages.length) return;
+
+                                                if ('IntersectionObserver' in window) {
+                                                    var observer = new IntersectionObserver(function(entries, obs) {
+                                                        entries.forEach(function(entry) {
+                                                            if (entry.isIntersecting) {
+                                                                var img = entry.target;
+                                                                var realSrc = img.getAttribute('data-src');
+                                                                if (realSrc) {
+                                                                    img.src = realSrc;
+                                                                    img.removeAttribute('data-src');
+                                                                }
+                                                                obs.unobserve(img);
+                                                            }
+                                                        });
+                                                    }, {
+                                                        root: null,
+                                                        rootMargin: '100px 0px 350px 0px', // Strict screen viewport + ~5 items buffer below
+                                                        threshold: 0.01
+                                                    });
+
+                                                    lazyImages.forEach(function(img) { observer.observe(img); });
+                                                } else {
+                                                    lazyImages.forEach(function(img) {
+                                                        var realSrc = img.getAttribute('data-src');
+                                                        if (realSrc) {
+                                                            img.src = realSrc;
+                                                            img.removeAttribute('data-src');
+                                                        }
+                                                    });
+                                                }
+                                            }
+
+                                            if (document.readyState === 'loading') {
+                                                document.addEventListener('DOMContentLoaded', loadViewportImages);
+                                            } else {
+                                                loadViewportImages();
                                             }
                                         """.trimIndent()
                                     }
@@ -395,7 +455,6 @@ class FileServer(private val context: Context) {
                                                     val thumbUrl = "/thumbnail?path=$encodedRel&v=$fileVer"
                                                     val streamUrl = "/stream?path=$encodedRel&v=$fileVer"
                                                     val downloadUrl = "/download?path=$encodedRel"
-                                                    val safeName = file.name.replace("\\", "\\\\").replace("'", "\\'")
                                                     val fallbackSvg = when {
                                                         isAud -> FALLBACK_AUDIO_SVG
                                                         isVid -> FALLBACK_VIDEO_SVG
@@ -405,10 +464,11 @@ class FileServer(private val context: Context) {
                                                     li {
                                                         div(classes = "thumb-container") {
                                                             if (isImg || isVid || isAud) {
-                                                                img(src = thumbUrl) {
-                                                                    attributes["loading"] = "lazy"
-                                                                    onLoad = "this.style.background='none';"
-                                                                    onError = "this.onerror=null; this.style.background='none'; this.src='$fallbackSvg';"
+                                                                val initialSrc = fallbackSvg.ifEmpty { "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" }
+                                                                img(src = initialSrc) {
+                                                                    attributes["data-src"] = thumbUrl
+                                                                    onLoad = "if(this.src&&!this.src.startsWith('data:'))this.style.background='none';"
+                                                                    onError = "this.onerror=null;this.style.background='none';this.src='$fallbackSvg';"
                                                                     if (fallbackSvg.isNotEmpty()) {
                                                                         style = "background: url('$fallbackSvg') center/contain no-repeat #f0f0f0;"
                                                                     }
@@ -424,8 +484,8 @@ class FileServer(private val context: Context) {
                                                                 }
                                                             }
                                                         }
-                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) onClick = "showPreview('$streamUrl', '$previewType', '$safeName', '$thumbUrl')"; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
-                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { onClick = "showPreview('$streamUrl', '$previewType', '$safeName', '$thumbUrl')"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { +"Download" } } }
+                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; }; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
+                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { +"Download" } } }
                                                     }
                                                 }
                                             }
@@ -697,24 +757,8 @@ class FileServer(private val context: Context) {
                             return@get call.respondBytes(cachedBytes, THUMBNAIL_CONTENT_TYPE)
                         }
 
-                        val bitmap = createThumbnail(file)
-
-                        if (bitmap != null) {
-                            val bytes = try {
-                                ByteArrayOutputStream().use { stream ->
-                                    val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                        Bitmap.CompressFormat.WEBP_LOSSY
-                                    } else {
-                                        Bitmap.CompressFormat.WEBP
-                                    }
-                                    if (!bitmap.compress(format, 80, stream)) {
-                                        throw IllegalStateException("WebP thumbnail compression failed")
-                                    }
-                                    stream.toByteArray()
-                                }
-                            } finally {
-                                bitmap.recycle()
-                            }
+                        val bytes = renderThumbnailBytes(file)
+                        if (bytes != null) {
                             thumbnailCache.put(cacheKey, bytes)
                             call.respondBytes(bytes, THUMBNAIL_CONTENT_TYPE)
                         } else {
@@ -780,6 +824,24 @@ class FileServer(private val context: Context) {
         } catch (e: Exception) { Log.e("FileServer", "Error starting server", e); throw e }
     }
 
+    private fun renderThumbnailBytes(file: File): ByteArray? {
+        val bitmap = createThumbnail(file) ?: return null
+        return try {
+            ByteArrayOutputStream().use { stream ->
+                val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Bitmap.CompressFormat.WEBP_LOSSY
+                } else {
+                    Bitmap.CompressFormat.WEBP
+                }
+                if (bitmap.compress(format, 80, stream)) stream.toByteArray() else null
+            }
+        } catch (e: Exception) {
+            null
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private fun createThumbnail(file: File): Bitmap? {
         return try {
             when (file.extension.lowercase()) {
@@ -822,7 +884,6 @@ class FileServer(private val context: Context) {
         val options = BitmapFactory.Options().apply {
             inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight)
             inPreferredConfig = Bitmap.Config.RGB_565
-            inDither = true
         }
         return BitmapFactory.decodeFile(file.absolutePath, options)?.let(::prepareThumbnail)
     }
@@ -835,7 +896,6 @@ class FileServer(private val context: Context) {
         val options = BitmapFactory.Options().apply {
             inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight)
             inPreferredConfig = Bitmap.Config.RGB_565
-            inDither = true
         }
         return BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options)?.let(::prepareThumbnail)
     }
