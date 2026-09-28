@@ -330,6 +330,20 @@ class FileServer(private val context: Context) {
                                     }
                                     script {
                                         +"""
+                                            const FALLBACK_SVGS = {
+                                                audio: '$FALLBACK_AUDIO_SVG',
+                                                video: '$FALLBACK_VIDEO_SVG',
+                                                image: '$FALLBACK_IMAGE_SVG'
+                                            };
+
+                                            function handleImgError(img, type) {
+                                                img.onerror = null;
+                                                img.style.backgroundImage = 'none';
+                                                if (FALLBACK_SVGS[type]) {
+                                                    img.src = FALLBACK_SVGS[type];
+                                                }
+                                            }
+
                                             function openPreview(elem) {
                                                 const url = elem.getAttribute('data-url');
                                                 const type = elem.getAttribute('data-type');
@@ -351,7 +365,7 @@ class FileServer(private val context: Context) {
                                                     img.style.maxHeight = '100%';
                                                     content.appendChild(img);
                                                 } else if (type === 'audio') {
-                                                    const art = document.createElement('img'); art.src = thumbUrl; art.className = 'music-art'; art.onerror = function() { this.src = '$FALLBACK_AUDIO_SVG'; }; content.appendChild(art);
+                                                    const art = document.createElement('img'); art.src = thumbUrl; art.className = 'music-art'; art.onerror = function() { this.src = FALLBACK_SVGS.audio; }; content.appendChild(art);
                                                     const audio = document.createElement('audio'); audio.src = url; audio.controls = true; audio.autoplay = true; audio.preload = 'metadata'; content.appendChild(audio);
                                                 } else if (type === 'video') {
                                                     const video = document.createElement('video'); video.src = url; video.controls = true; video.autoplay = true; video.preload = 'metadata'; content.appendChild(video);
@@ -455,23 +469,14 @@ class FileServer(private val context: Context) {
                                                     val thumbUrl = "/thumbnail?path=$encodedRel&v=$fileVer"
                                                     val streamUrl = "/stream?path=$encodedRel&v=$fileVer"
                                                     val downloadUrl = "/download?path=$encodedRel"
-                                                    val fallbackSvg = when {
-                                                        isAud -> FALLBACK_AUDIO_SVG
-                                                        isVid -> FALLBACK_VIDEO_SVG
-                                                        isImg -> FALLBACK_IMAGE_SVG
-                                                        else -> ""
-                                                    }
+                                                    val mediaType = when { isAud -> "audio"; isVid -> "video"; else -> "image" }
                                                     li {
                                                         div(classes = "thumb-container") {
                                                             if (isImg || isVid || isAud) {
-                                                                val initialSrc = fallbackSvg.ifEmpty { "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" }
-                                                                img(src = initialSrc) {
+                                                                img(src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E", classes = "ph ph-$mediaType") {
                                                                     attributes["data-src"] = thumbUrl
-                                                                    onLoad = "if(this.src&&!this.src.startsWith('data:'))this.style.background='none';"
-                                                                    onError = "this.onerror=null;this.style.background='none';this.src='$fallbackSvg';"
-                                                                    if (fallbackSvg.isNotEmpty()) {
-                                                                        style = "background: url('$fallbackSvg') center/contain no-repeat #f0f0f0;"
-                                                                    }
+                                                                    onLoad = "if(this.src&&!this.src.startsWith('data:'))this.style.backgroundImage='none';"
+                                                                    onError = "handleImgError(this, '$mediaType');"
                                                                 }
                                                             } else {
                                                                 span(classes = "icon") {
