@@ -353,6 +353,7 @@ class FileServer(private val context: Context) {
                                             }
 
                                             async function showPreview(url, type, name, thumbUrl) {
+                                                isBusy = true;
                                                 const overlay = document.getElementById('preview-overlay');
                                                 const content = document.getElementById('preview-content');
                                                 overlay.style.display = 'flex';
@@ -379,11 +380,50 @@ class FileServer(private val context: Context) {
                                             function closePreview() { 
                                                 document.getElementById('preview-content').innerHTML = '';
                                                 document.getElementById('preview-overlay').style.display = 'none'; 
+                                                isBusy = false;
+                                                setTimeout(fetchNextBatch, 300);
+                                            }
+
+                                            function onUserDownload() {
+                                                isBusy = true;
+                                                setTimeout(function() {
+                                                    isBusy = false;
+                                                    fetchNextBatch();
+                                                }, 4000);
+                                            }
+
+                                            var activeRequests = 0;
+                                            var isBusy = false;
+
+                                            function fetchNextBatch() {
+                                                if (isBusy || activeRequests) return;
+                                                var lazyImages = document.querySelectorAll('img[data-src]');
+                                                if (!lazyImages || !lazyImages.length) return;
+                                                var count = Math.min(5, lazyImages.length);
+                                                for (var i = 0; i !== count; i++) {
+                                                    triggerImageLoad(lazyImages[i]);
+                                                }
+                                            }
+
+                                            function triggerImageLoad(img) {
+                                                var realSrc = img.getAttribute('data-src');
+                                                if (!realSrc) return;
+                                                img.removeAttribute('data-src');
+                                                activeRequests++;
+
+                                                var onDone = function() {
+                                                    activeRequests = Math.max(0, activeRequests - 1);
+                                                    if (activeRequests === 0) {
+                                                        setTimeout(fetchNextBatch, 50);
+                                                    }
+                                                };
+                                                img.addEventListener('load', onDone, { once: true });
+                                                img.addEventListener('error', onDone, { once: true });
+                                                img.src = realSrc;
                                             }
 
                                             function loadViewportImages() {
                                                 var lazyImages = document.querySelectorAll('img[data-src]');
-
                                                 if (!lazyImages || !lazyImages.length) return;
 
                                                 if ('IntersectionObserver' in window) {
@@ -391,29 +431,19 @@ class FileServer(private val context: Context) {
                                                         entries.forEach(function(entry) {
                                                             if (entry.isIntersecting) {
                                                                 var img = entry.target;
-                                                                var realSrc = img.getAttribute('data-src');
-                                                                if (realSrc) {
-                                                                    img.src = realSrc;
-                                                                    img.removeAttribute('data-src');
-                                                                }
                                                                 obs.unobserve(img);
+                                                                triggerImageLoad(img);
                                                             }
                                                         });
                                                     }, {
                                                         root: null,
-                                                        rootMargin: '100px 0px 350px 0px', // Strict screen viewport + ~5 items buffer below
+                                                        rootMargin: '100px 0px 350px 0px',
                                                         threshold: 0.01
                                                     });
 
                                                     lazyImages.forEach(function(img) { observer.observe(img); });
                                                 } else {
-                                                    lazyImages.forEach(function(img) {
-                                                        var realSrc = img.getAttribute('data-src');
-                                                        if (realSrc) {
-                                                            img.src = realSrc;
-                                                            img.removeAttribute('data-src');
-                                                        }
-                                                    });
+                                                    lazyImages.forEach(function(img) { triggerImageLoad(img); });
                                                 }
                                             }
 
@@ -490,7 +520,7 @@ class FileServer(private val context: Context) {
                                                             }
                                                         }
                                                         div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; }; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
-                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { +"Download" } } }
+                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { onClick = "onUserDownload()"; +"Download" } } }
                                                     }
                                                 }
                                             }
