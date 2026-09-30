@@ -33,6 +33,7 @@ import java.net.NetworkInterface
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -306,8 +307,9 @@ class FileServer(private val context: Context) {
                                             .breadcrumb .current { color: #333; font-weight: bold; padding: 2px 6px; }
                                             ul { list-style: none; padding: 0; margin: 0; }
                                             li { display: flex; align-items: center; padding: 5px; border-bottom: 1px solid #eee; }
-                                            .thumb-container { width: 60px; height: 60px; margin-right: 15px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 8px; overflow: hidden; flex-shrink: 0; }
+                                            .thumb-container { position: relative; width: 80px; height: 50px; margin-right: 15px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 5px; overflow: hidden; flex-shrink: 0; }
                                             .thumb-container img { width: 100%; height: 100%; object-fit: cover; }
+                                            .thumb-duration { position: absolute; bottom: 2px; right: 2px; background: rgba(0, 0, 0, 0.82); color: #ffffff; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 4px; line-height: 1.2; letter-spacing: 0.02em; pointer-events: none; backdrop-filter: blur(2px); border: 1px solid rgba(255, 255, 255, 0.15); z-index: 2; }
                                             .thumb-container img.ph { background-color: #f0f0f0; background-position: center; background-repeat: no-repeat; background-size: contain; }
                                             .thumb-container img.ph-image { background-image: url('$FALLBACK_IMAGE_SVG'); }
                                             .thumb-container img.ph-video { background-image: url('$FALLBACK_VIDEO_SVG'); }
@@ -498,6 +500,12 @@ class FileServer(private val context: Context) {
                                                                     onLoad = "if(this.src&&!this.src.startsWith('data:'))this.style.backgroundImage='none';"
                                                                     onError = "handleImgError(this, '$mediaType');"
                                                                 }
+                                                                if (isVid) {
+                                                                    val durationStr = getVideoDuration(file)
+                                                                    if (durationStr != null) {
+                                                                        span(classes = "thumb-duration") { +durationStr }
+                                                                    }
+                                                                }
                                                             } else {
                                                                 span(classes = "icon") {
                                                                     +when {
@@ -509,7 +517,7 @@ class FileServer(private val context: Context) {
                                                                 }
                                                             }
                                                         }
-                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; }; +file.name }; div(classes = "file-meta") { +"${file.length() / 1024} KB • ${file.extension.uppercase()}" } } }
+                                                        div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; }; +file.name }; div(classes = "file-meta") { +"${formatFileSize(file.length())} • ${file.extension.uppercase()}" } } }
                                                         if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { +"Download" } } }
                                                     }
                                                 }
@@ -1023,6 +1031,50 @@ class FileServer(private val context: Context) {
     }
 }
 fun String.encodeURLParameter(): String = URLEncoder.encode(this, "UTF-8")
+
+private val videoDurationCache = ConcurrentHashMap<String, String>()
+
+fun getVideoDuration(file: File): String? {
+    val key = "${file.absolutePath}:${file.lastModified()}:${file.length()}"
+    videoDurationCache[key]?.let { return it }
+    return try {
+        val retriever = MediaMetadataRetriever()
+        retriever.setDataSource(file.absolutePath)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        retriever.release()
+        if (durationMs <= 0) return null
+        val formatted = formatDuration(durationMs)
+        if (videoDurationCache.size > 1000) videoDurationCache.clear()
+        videoDurationCache[key] = formatted
+        formatted
+    } catch (e: Exception) {
+        null
+    }
+}
+
+fun formatDuration(ms: Long): String {
+    val totalSeconds = ms / 1000
+    val seconds = totalSeconds % 60
+    val totalMinutes = totalSeconds / 60
+    val minutes = totalMinutes % 60
+    val hours = totalMinutes / 60
+
+    return if (hours > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%d:%02d", minutes, seconds)
+    }
+}
+
+fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val kb = bytes / 1024.0
+    if (kb < 1024) return "%.1f KB".format(Locale.US, kb).replace(".0 KB", " KB")
+    val mb = kb / 1024.0
+    if (mb < 1024) return "%.1f MB".format(Locale.US, mb).replace(".0 MB", " MB")
+    val gb = mb / 1024.0
+    return "%.2f GB".format(Locale.US, gb).replace(".00 GB", " GB")
+}
 
 private object FallbackIcons {
     val AUDIO: String by lazy {

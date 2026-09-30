@@ -14,7 +14,7 @@ import androidx.core.app.NotificationCompat
 class ServerService : Service() {
 
     companion object {
-        private const val TAG = "ServerService"
+        private const val TAG = "AppPriorityCheck"
         private const val CHANNEL_ID = "TransferPTP_Server_Channel"
         private const val NOTIFICATION_ID = 1001
         private const val INACTIVITY_TIMEOUT_MS = 15000L // 15 seconds timeout
