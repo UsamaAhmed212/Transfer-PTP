@@ -161,8 +161,9 @@ class FileServer(private val context: Context) {
             prefs.edit().putString("active_sessions", json).apply()
         }
 
-        fun stopServer() {
+        fun stopServer(context: Context? = null) {
             try { server?.stop(200, 500) } catch (e: Exception) { } finally { server = null }
+            context?.let { ServerService.stopServerService(it) }
         }
         
         fun disconnectDevice(context: Context, displayInfo: String) {
@@ -195,7 +196,7 @@ class FileServer(private val context: Context) {
     }
 
     fun stop() {
-        stopServer()
+        stopServer(context)
     }
 
     fun start(
@@ -205,6 +206,7 @@ class FileServer(private val context: Context) {
     ) {
         initStorage(context)
         Companion.onDevicesUpdated = onDevicesUpdated
+        ServerService.startServerService(context)
         
         if (server != null) {
             onStarted(lastUrl ?: "", lastPin ?: "")
@@ -344,6 +346,22 @@ class FileServer(private val context: Context) {
                                                 }
                                             }
 
+                                            var pingTimer = null;
+
+                                            function startPing() {
+                                                if (pingTimer) return;
+                                                pingTimer = setInterval(function() {
+                                                    fetch('/ping').catch(function() {});
+                                                }, 10000);
+                                            }
+
+                                            function stopPing() {
+                                                if (pingTimer) {
+                                                    clearInterval(pingTimer);
+                                                    pingTimer = null;
+                                                }
+                                            }
+
                                             function openPreview(elem) {
                                                 const url = elem.getAttribute('data-url');
                                                 const type = elem.getAttribute('data-type');
@@ -353,6 +371,7 @@ class FileServer(private val context: Context) {
                                             }
 
                                             async function showPreview(url, type, name, thumbUrl) {
+                                                startPing();
                                                 const overlay = document.getElementById('preview-overlay');
                                                 const content = document.getElementById('preview-content');
                                                 overlay.style.display = 'flex';
@@ -377,6 +396,7 @@ class FileServer(private val context: Context) {
                                                 document.getElementById('preview-title').innerText = name;
                                             }
                                             function closePreview() { 
+                                                stopPing();
                                                 document.getElementById('preview-content').innerHTML = '';
                                                 document.getElementById('preview-overlay').style.display = 'none'; 
                                             }
@@ -769,6 +789,12 @@ class FileServer(private val context: Context) {
                         } else {
                             call.respond(HttpStatusCode.NotFound)
                         }
+                    }
+
+                    get("/ping") {
+                        val session = call.sessions.get<UserSession>()
+                        if (session == null || !activeSessions.containsKey(session.token)) return@get call.respond(HttpStatusCode.Forbidden)
+                        call.respondText("OK")
                     }
 
                     get("/stream") {
