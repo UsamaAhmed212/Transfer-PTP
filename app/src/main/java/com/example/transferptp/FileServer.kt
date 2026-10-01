@@ -328,13 +328,15 @@ class FileServer(private val context: Context) {
                                             .btn-download { background: linear-gradient(135deg, #059669 0%, #10b981 100%); color: #ffffff; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3); }
                                             .btn-download:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 6px 16px rgba(16, 185, 129, 0.5); filter: brightness(1.1); }
                                             .btn-download:active { transform: translateY(0) scale(0.95); }
-                                            #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
-                                            #preview-content { width: 90%; height: 80%; display: flex; flex-direction: column; align-items: center; gap: 20px; overflow: hidden; }
-                                            .close-btn { position: absolute; top: 20px; right: 30px; color: white; font-size: 40px; cursor: pointer; }
-                                            audio, video { width: 100%; max-width: 600px; outline: none; }
-                                            .music-art { width: 300px; height: 300px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); object-fit: cover; }
-                                            .text-preview { background: #1e1e1e; color: #d4d4d4; padding: 20px; width: 100%; height: 100%; overflow: auto; border-radius: 8px; font-family: monospace; white-space: pre-wrap; font-size: 14px; text-align: left; }
-                                            iframe { border: none; width: 100%; height: 100%; border-radius: 8px; background: white; }
+                                            #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; padding: 0; box-sizing: border-box; }
+                                            #preview-content { width: 100%; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; overflow: hidden; }
+                                            .close-btn { position: absolute; top: 15px; right: 25px; color: white; font-size: 40px; cursor: pointer; z-index: 1010; }
+                                            #preview-title { color: #f8fafc; font-size: 1rem; font-weight: 700; margin: 0 0 2px 0; text-align: center; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+                                            audio { width: 100%; max-width: 600px; outline: none; }
+                                            video { max-width: 100%; max-height: 88vh; width: auto; height: auto; outline: none; object-fit: contain; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+                                            .music-art { width: 280px; height: 280px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.1); object-fit: cover; }
+                                            .text-preview { background: #090d16; color: #e2e8f0; padding: 24px; width: 100%; height: 100%; overflow: auto; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); font-family: 'Fira Code', 'Consolas', monospace; white-space: pre-wrap; font-size: 13px; text-align: left; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+                                            iframe { border: 1px solid rgba(255,255,255,0.1); width: 100%; height: 100%; border-radius: 16px; background: white; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
                                         """.trimIndent()
                                     }
                                     script {
@@ -549,7 +551,7 @@ class FileServer(private val context: Context) {
                                             }
                                         }
                                     }
-                                    div { id = "preview-overlay"; span(classes = "close-btn") { onClick = "closePreview()"; +"×" }; h3 { id = "preview-title"; style = "color: white; margin-bottom: 20px;" }; div { id = "preview-content" } }
+                                    div { id = "preview-overlay"; span(classes = "close-btn") { onClick = "closePreview()"; +"×" }; h3 { id = "preview-title"; style = "color: white; margin: 10px 0;" }; div { id = "preview-content" } }
                                 }
                             }
                         } else {
