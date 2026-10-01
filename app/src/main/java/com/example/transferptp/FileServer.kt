@@ -319,10 +319,15 @@ class FileServer(private val context: Context) {
                                             .file-info { flex-grow: 1; min-width: 0; }
                                             .file-name { font-weight: 500; color: #007bff; text-decoration: none; word-break: break-all; cursor: pointer; }
                                             .file-meta { font-size: 0.8rem; color: #6c757d; margin-top: 4px; }
-                                            .actions { display: flex; gap: 8px; }
-                                            .btn { padding: 5px 10px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; cursor: pointer; border: none; }
-                                            .btn-preview { background: #007bff; color: white; }
-                                            .btn-download { background: #28a745; color: white; }
+                                            .actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+                                            .btn-icon-only { width: 36px; height: 36px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border: none; outline: none; text-decoration: none; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); box-sizing: border-box; user-select: none; }
+                                            .btn-icon-only .svg { width: 18px; height: 18px; fill: #ffffff; transition: transform 0.2s ease; }
+                                            .btn-preview { background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); color: #ffffff; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3); }
+                                            .btn-preview:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 6px 16px rgba(79, 70, 229, 0.5); filter: brightness(1.1); }
+                                            .btn-preview:active { transform: translateY(0) scale(0.95); }
+                                            .btn-download { background: linear-gradient(135deg, #059669 0%, #10b981 100%); color: #ffffff; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3); }
+                                            .btn-download:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 6px 16px rgba(16, 185, 129, 0.5); filter: brightness(1.1); }
+                                            .btn-download:active { transform: translateY(0) scale(0.95); }
                                             #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
                                             #preview-content { width: 90%; height: 80%; display: flex; flex-direction: column; align-items: center; gap: 20px; overflow: hidden; }
                                             .close-btn { position: absolute; top: 20px; right: 30px; color: white; font-size: 40px; cursor: pointer; }
@@ -518,7 +523,27 @@ class FileServer(private val context: Context) {
                                                             }
                                                         }
                                                         div(classes = "file-info") { if (file.isDirectory) { a(href = "/?path=$encodedRel", classes = "file-name") { +file.name }; div(classes = "file-meta") { +"Folder" } } else { span(classes = "file-name") { if (previewType != null) { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; }; +file.name }; div(classes = "file-meta") { +"${formatFileSize(file.length())} • ${file.extension.uppercase()}" } } }
-                                                        if (!file.isDirectory) { div(classes = "actions") { if (previewType != null) button(classes = "btn btn-preview") { attributes["data-url"] = streamUrl; attributes["data-type"] = previewType; attributes["data-name"] = file.name; attributes["data-thumb"] = thumbUrl; onClick = "openPreview(this)"; +"Preview" }; a(href = downloadUrl, classes = "btn btn-download") { +"Download" } } }
+                                                        if (!file.isDirectory) {
+    div(classes = "actions") {
+        if (previewType != null) {
+            button(classes = "btn-icon-only btn-preview") {
+                attributes["data-url"] = streamUrl
+                attributes["data-type"] = previewType
+                attributes["data-name"] = file.name
+                attributes["data-thumb"] = thumbUrl
+                attributes["title"] = "Preview"
+                attributes["aria-label"] = "Preview"
+                onClick = "openPreview(this)"
+                unsafe { +"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="svg"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"></path></svg>""" }
+            }
+        }
+        a(href = downloadUrl, classes = "btn-icon-only btn-download") {
+            attributes["title"] = "Download"
+            attributes["aria-label"] = "Download"
+            unsafe { +"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 35 35" class="svg"><path d="M17.5,22.131a1.249,1.249,0,0,1-1.25-1.25V2.187a1.25,1.25,0,0,1,2.5,0V20.881A1.25,1.25,0,0,1,17.5,22.131Z"></path><path d="M17.5,22.693a3.189,3.189,0,0,1-2.262-.936L8.487,15.006a1.249,1.249,0,0,1,1.767-1.767l6.751,6.751a.7.7,0,0,0,.99,0l6.751-6.751a1.25,1.25,0,0,1,1.768,1.767l-6.752,6.751A3.191,3.191,0,0,1,17.5,22.693Z"></path><path d="M31.436,34.063H3.564A3.318,3.318,0,0,1,.25,30.749V22.011a1.25,1.25,0,0,1,2.5,0v8.738a.815.815,0,0,0,.814.814H31.436a.815.815,0,0,0,.814-.814V22.011a1.25,1.25,0,1,1,2.5,0v8.738A3.318,3.318,0,0,1,31.436,34.063Z"></path></svg>""" }
+        }
+    }
+}
                                                     }
                                                 }
                                             }
